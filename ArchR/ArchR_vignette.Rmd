@@ -1,0 +1,736 @@
+---
+title: "ArchR"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache = TRUE)
+knitr::opts_knit$set(root.dir = "/omics/groups/OE0533/internal/katharina/scDoRI/ArchR")
+setwd("/omics/groups/OE0533/internal/katharina/scDoRI/ArchR/")
+
+set.seed(1)
+```
+
+
+
+ArchR takes as input aligned BAM or fragment files. These files are stored in the 
+HDF5 file format (hierarchical data format version5). The HDF5 files are the 
+constituent pieces of an ArchR analysis. They are called Arrow files. All Arrow
+files are grouped into a project, a compressed R data file. The Files are accessed 
+in minimal chunks (parallel read and write operations). Therefore, in memory we
+do not have any large file sizes.
+
+To select high quality celsl TSS enrichment scores are used. 
+
+#### Doublet detection-and-removal algorithm
+Heterotypic doublets are identified by generating a collection of synthetic doublets.
+These synthetic doublets are projected into low-dimensional embeddings. Searching
+for nearest neighbours to the synthetic doublets we can identify doublets in the
+dataset. This outperforms the prediction of doublets using fragment number
+(ROC-AUC). (Compared to demuxlet as ground truth)
+
+#### Dimensionality reduction
+
+* two other algorithms:
+  + latent semantic indexing (LSI) in Signac
+  + landmark diffusion maps (LDM) in SnapATAC
+  
+* ArchR: optimized iterative LSI method 
+  + exhibits less susceptibility to batch effects 
+  + focuses on most variable features 
+  1. create a LSI REduction from a subset of the total cells
+  2. linearly project the remaining cells into this subspace with LSI proejection
+  (based on SVD)
+  
+  
+  ### Load libraries
+  
+```{r}
+library(ArchR)
+#library(caret)
+```
+  
+  
+```{r}
+inputFiles <- getTutorialData("Hematopoiesis")
+```
+
+
+```{r}
+addArchRGenome("hg19")
+```
+
+Create Arrow Files
+
+1. read accexxible fragments 
+2. calculate QC information for each cell (TSS enrichment scores and nucelosome info)
+3. filter cells based on QC parameters
+4. create genome-wide tile matrix using 500-bp bins
+5. create GeneScoreMatrix using gene annotation
+
+**TSS enrichment score**
+= signal to noise calculation
+The reads around a particular TSS are collected and aggregated to form a distribution
+of reads which is centered on th TSS. this distribution extends to 1000bp in both 
+directions
+* we take the average read depth in the 100 bps at each end flank and calcualte 
+a fold change at each position over that average read depth (total of 200bp of 
+averaged data)
+* If there is a high read signal at TSS there will be an increase in signal towards
+the middle of the distribution
+* high signal means that the region is accessible
+* the signal value at the center of the distribution is the TSS enrichment metric
+
+```{r}
+ArrowFiles <- createArrowFiles(
+  inputFiles = inputFiles,
+  sampleNames = names(inputFiles),
+  minTSS = 4, #Dont set this too high because you can always increase later
+  minFrags = 1000, # minimum number of mapped fragments required
+  addTileMat = TRUE,
+  addGeneScoreMat = TRUE
+)
+```
+
+```{r}
+# the arrow files object simply contains a character vector of arrow file paths
+ArrowFiles
+```
+
+
+### QC
+
+1. the number of **unique nuclear fragments** (as opposed to mitochondrial fragments)
+2. **signal-to-background ratio** -> if this is low this probably corresponds to dying
+cells where the entire genome allows random transposition
+3. **fragment size distribution** -> since 147 bp are wrapped around a nucleosome it is 
+expected that there are depletions of fragments of this length at regular intervals
+
+
+### Inferring Doublets
+
+Should be removed, because they can interfere with downstream analysis
+
+```{r}
+doubScores <- addDoubletScores(
+  input = ArrowFiles,
+  k = 10, #Refers to how many cells near a "pseudo-doublet" to count.
+  knnMethod = "UMAP", #Refers to the embedding to use for nearest neighbor search.
+  LSIMethod = 1
+)
+
+```
+
+
+### Create ArchRProject
+
+An ArchR Project is initialized with some important attributes:
+
+* ouput directory
+* sample names
+* `sampleColData` -> matrix containint data for each sample
+* `cellColData` -> contains data associated with each cell
+  + after using `addDoubletScore()` there will be a column 
+  for "Doublet Enrichment" and "Doublet Score"
+* total number of cells (excluding doublets)
+* median TSS score & median number of fragments across all cells 
+and samples
+
+```{r}
+proj <- ArchRProject(
+  ArrowFiles = ArrowFiles, 
+  outputDirectory = "ArchRVignette",
+  copyArrows = TRUE#This is recommened so that you maintain an unaltered copy for later usage.
+)
+```
+
+Cell Names:
+
+```{r}
+# cell names
+proj$cellNames[1:5]
+```
+
+Sample Names:
+
+```{r}
+proj$Sample[1:5]
+length(proj$Sample)
+```
+For each cell there is a TSS enrichment score:
+```{r}
+proj$TSSEnrichment %>% head
+quantile(proj$TSSEnrichment)
+```
+
+##### How to subset an ArchR project
+
+* numerically 
+
+```{r}
+# note that that only 100 cells are accessed
+proj[1:100,]
+```
+
+
+* by cell name
+
+```{r}
+proj[proj$cellNames[1:100], ]
+```
+
+* keep specific samples
+
+```{r}
+idxSample <- BiocGenerics::which(proj$Sample %in% "scATAC_BMMC_R1")
+cellsSample <- proj$cellNames[idxSample]
+proj[cellsSample, ]
+```
+
+* specific cutoff for TSS enrichment score
+
+```{r}
+idxPass <- which(proj$TSSEnrichment >= 8)
+cellsPass <- proj$cellNames[idxPass]
+proj[cellsPass, ]
+```
+
+
+```{r}
+# What information does the vector of TSS enrichment contain?
+class(proj$TSSEnrichment)
+length(proj$TSSEnrichment)
+length(proj$nFrags)
+```
+```{r}
+getAvailableMatrices(proj)
+```
+
+
+##### Obtaining columns from cellColData
+
+* retrieve metadata columns, e.g. number of unique nuclear fragments per cell
+
+```{r}
+df <- getCellColData(proj, select = "nFrags")
+df %>% head
+dim(df)
+```
+
+* operations on a given column
+
+```{r}
+df <- getCellColData(proj, select = c("log10(nFrags)", "nFrags -1 "))
+
+df %>% head
+```
+
+### Plot QC metrics 
+
+e.g. -log10(unique fragments) vs TSS enrichment
+
+* TSS enrichment score = signa-to-background 
+* number of unique fragments -> cells with very few fragments do not have enough 
+data to confidently analyze them 
+* in the plot areas with more points/cells are colored in orange, and areas
+with less points in blue, indicating the distribution of cell
+```{r}
+df <- getCellColData(proj, select = c("log10(nFrags)", "TSSEnrichment"))
+df %>% head
+```
+```{r}
+p <- ggPoint(
+  x = df[, 1], y = df[, 2], 
+  colorDensity = TRUE, # should the density of points on the plot be indicated by color?
+  continuousSet = "sambaNight", 
+  xlabel = "Log10 unique fragments",
+  ylabel = "TSS enrichment",
+  xlim = c(log10(500), quantile(df[,1], probs = 0.99)),
+  ylim = c(0, quantile(df[,2], probs = 0.99))
+  ) + geom_hline(yintercept = 4, lty = "dashed") +
+  geom_vline(xintercept = 3, lty = "dashed")
+p
+```
+
+### Ploting sample statistics
+
+* when we have distinct samples, it can be important to compare various
+metric between samples
+* ridge plots & violin plots are used for grouped data
+
+```{r}
+p1 <- plotGroups(
+  ArchRProj = proj,
+  groupBy = "Sample",
+  colorBy = "cellColData",
+  name = "TSSEnrichment",
+  plotAs = "ridges"
+)
+
+
+p2 <- plotGroups(
+  ArchRProj = proj,
+  groupBy = "Sample",
+  colorBy = "cellColData",
+  name = "TSSEnrichment",
+  plotAs = "violin",
+  alpha = 0.4,
+  addBoxPlot = TRUE
+)
+ggAlignPlots(p1, p2, type = "h")
+
+```
+
+```{r}
+p1 <- plotGroups(
+  ArchRProj = proj,
+  groupBy = "Sample",
+  colorBy = "cellColData",
+  name = "log10(nFrags)",
+  plotAs = "ridges"
+)
+
+p2 <- plotGroups(
+  ArchRProj = proj,
+  groupBy = "Sample",
+  colorBy = "cellColData",
+  name = "log10(nFrags)",
+  plotAs = "violin",
+  alpha= 0.4,
+  addBoxPlot = TRUE
+)
+
+ggAlignPlots(p1, p2, type = "h")
+```
+
+
+### Plot Fragment Size Distribution & TSS Enrichment Profiles
+
+* the distribution of fragments size can be very different between samples,
+cell types and batches -> these differences do not necessarily correlate with 
+differences in quality
+* the dip is the fragment size of a nucleosome ~147bp
+* TSS enrichment profiles
+  + clear peak in the center 
+  + smaller shoulder peak right of the center caused by well positioned +1 nucleosome
+
+```{r, fig.width=5, fig.height=5}
+#p1 <- plotFragmentSizes(ArchRProj = proj)
+#p2 <- plotTSSEnrichment(ArchRProj = proj)
+#ggAlignPlots(p1, p2, type = "v")
+```
+
+### Filtering Doublets
+
+With the function `addDoubleScores()` information on predicted doublets has been
+added. Filter the putative doublets. They are not removed physically, but 
+excluded from downstream analysis. ArchR automatically prints the number of
+cells removed from each sample and the corresponding
+percentage which is very handy.
+
+**arguments:**
+
+* cutEnrich = minimum cutoff for DoubletEnrichment, number of simulated 
+doublets divided by expected number given a random uniform distribution
+* cutScore = minimum cutoff for Doublet Score, represents -log10(binomial adjusted p-value)
+for the DoubletEnrichmentadd
+* filteRatio = maximum ratio of predicted doublets to filter based on number of 
+pass-filter cells (A higher filterRatio means that more cells are removed)
+e.g. 5000 cells
+
+maximum would be filterRatio * 5000 / 100000 = filterRatio * 5000 * 0.05
+
+**This way samples with different percentage of doublets will be filtered accordingly.**
+
+```{r}
+# in our case we now have 10 251 cells as opposed to 10 661 cells before
+# filtering -> 410 cells were removed (3.85%)
+proj <- filterDoublets(ArchRProj = proj)
+```
+
+
+### Dimensionality reduction & Clustering
+
+Because we can have maximally two accessible alleles per cell, the scATAC-seq data
+is sparse. Therefore, the majority of accessible regions are not transposed, meaning 
+that most loci will have 0 accessible alleles. A zero could mean "non-accessible" 
+or "not sampled". For many analysis we can use a binarized matix. **Imporantly,**
+**the 1s have information, BUT the 0s do not!**
+
+A PCA would result in high inter-cell similarity at all 0 positions. An alternative
+approach for dimensionality reduction is a **layered dimensionality reduction**. First,
+**Latent Semantic Indexing (LSI)** is used. LSI is an approach from language
+processing. Different samples are the "documents" and different regions/peaks are
+the "words". 
+
+#### Iterative LSI
+
+1. compute term frequency by depth normalizating per single cell
+2. normalize by inverse document frequency -> weights features by how often they 
+occur (differentiate between more specific and commonly accessible features)
+3. you get a **TF-IDF** matrix (term frequency-inverse document frequency) which
+tells us how important a region/peak is to a sample
+4. SVD identifies the most valuable information across samples & represented 
+in a lower dimensional space
+5. Clusters are identified with Seurat's Shared Nearest Neighbor clustering
+6. Sum accessibility across all single cells in each cluster -> log-normalize
+7. Identify most variable features across the clusters
+8. repeat with most variable peaks as features
+
+With LSI we can reduce the dimensionality of the sparse insertion matrix to tens 
+or hundreds. Then UMAP or t-SNE can be used to visualize the data
+
+
+Unlike in scRNA-seq we cannot select the top highly variable features before 
+dimensionality reduction (high noise, low reproducibility). Rather the iterative 
+LSI approach first computes a LSI 
+on the most accessible tiles (this will identify clusters corresponding to the 
+major cell types). Then, ArchR computes the average accessibility across these 
+clusters across all features. Next, the most variable peaks across these clusters
+are identified. The most highly accessible peaks are the features of a new 
+round of LSI. We can set how many rounds of LSI we want to be peformed. 
+
+Using iterative LSI reduces batch effects. If you see some batch effects you could
+try to add more LSI iterations and start from a lower intitial clustering 
+resolution. Also, the number of variable features can be lowered.  
+
+#### Estimated LSI
+
+* for extremely large scATAC-seq datasets
+
+1. subset of landmark cells (randomly selected) are used for LSI
+2. remaining cells are TF-IDF normlaized using the IDF determined from
+the landmark cells from step one
+3. normalized cells are porjected into the SVD space defined by the landmark cells
+
+The LSI transformation is, therefore, based on a subset of cells only and the 
+remaining cells are projected into this landmark LSI. This approach minimizes 
+memory usage. The landmark set size depends on cell type proportions. 
+
+* iterative LSI dimensionality reduction -> explore the parameters!
+
+#### Batch correct with Harmony
+
+* dimensionality reduction object from ArchR isp passed to Harmony
+
+```{r}
+proj <- addIterativeLSI(ArchRProj = proj, useMatrix = "TileMatrix", name = "IterativeLSI")
+
+```
+
+```
+proj <- addIterativeLSI(
+    ArchRProj = proj,
+    useMatrix = "TileMatrix", 
+    name = "IterativeLSI", 
+    iterations = 2, 
+    clusterParams = list( #See Seurat::FindClusters
+        resolution = c(0.2), 
+        sampleCells = 10000, 
+        n.start = 10
+    ), 
+    varFeatures = 25000, 
+    dimsToUse = 1:30
+)
+```
+
+
+* Calling clusters in this new space uses the Seurat's graph clustering function as default clustering method. The Seurat 
+method first computs KNN graph and then a  modularity optimization
+technique to cluster the cells (iteratively group cells togetether
+with Louvian algorithm using 10 random starts). Another option 
+is to use "Scran". The
+default number of nearest neighbors used
+is 10. The minimum number of cells for a cluster to be called a 
+cluster is set to 5 by default. The maximum number of clusters to 
+be called is set to 25 by default. 
+
+```{r}
+proj <- addClusters(input = proj, reducedDims = "IterativeLSI")
+```
+
+
+### Visualizing a UMAP embedding
+
+* uses uwot package
+* various attributes of the data can be visualized
+  + these are stored in a matrix called `cellColData`
+  + which variable the plot is colored by is specified by `colorBy`
+  and `name` parameter
+
+```{r}
+proj <- addUMAP(ArchRProj = proj, reducedDims = "IterativeLSI")
+```
+
+```{r, fig.width=8}
+# color by sample
+p1 <- plotEmbedding(ArchRProj = proj, colorBy = "cellColData", name = "Sample", embedding = "UMAP")
+
+# color by cluster
+p2 <- plotEmbedding(ArchRProj = proj, colorBy = "cellColData", name = "Clusters", embedding = "UMAP")
+
+ggAlignPlots(p1, p2, type = "h")
+```
+
+### Cluster assignment using gene scores
+
+For the toy dataset marker genes of known hematopoietic regulators
+can be used. Using MAGIC we add imputation weights to smooth the dropout noise in the gene scores
+
+```{r}
+proj <- addImputeWeights(proj)
+```
+
+```{r}
+markerGenes  <- c(
+    "CD34",  #Early Progenitor
+    "GATA1", #Erythroid
+    "PAX5", "MS4A1", "MME", #B-Cell Trajectory
+    "CD14", "MPO", #Monocytes
+    "CD3D", "CD8A"#TCells
+  )
+```
+```{r}
+p <- plotEmbedding(
+    ArchRProj = proj, 
+    colorBy = "GeneScoreMatrix", 
+    name = markerGenes, 
+    embedding = "UMAP",
+    imputeWeights = getImputeWeights(proj)
+)
+```
+
+
+
+### Visualizing Genome Browser Tracks
+
+Browse local chromatin accessibility at marker genes. Plot genome
+browser tracks per cluster
+```{r}
+p <- plotBrowserTrack(
+    ArchRProj = proj, 
+    groupBy = "Clusters", 
+    geneSymbol = markerGenes, 
+    upstream = 50000,
+    downstream = 50000
+)
+```
+
+
+```{r}
+grid::grid.newpage()
+grid::grid.draw(p$CD14)
+```
+
+
+
+```{r}
+saveArchRProject(proj, outputDirectory = "ArchRVignette", load = FALSE)
+```
+
+
+## Integration with scRNA-seq
+
+* the scATAC-seq gene score matrix is compared with the scRNA-seq gene expression
+matrix
+* for this alignment the `FindTransferAnchors()` function from Seurat is used
+* to scale for large sample size, this process is parallelized
+* for each cell in ATAC we find the cell in scRNA-seq that looks most similar 
+-> assign the correpsonding gene expression to that cell. 
+
+Apart from using this information for identifying clusters we can also use it 
+for identifying predicted cis-regulatory elements.
+
+
+```{r}
+if(!file.exists("scRNA-Hematopoiesis-Granja-2019.rds")){
+    download.file(
+        url = "https://jeffgranja.s3.amazonaws.com/ArchR/TestData/scRNA-Hematopoiesis-Granja-2019.rds",
+        destfile = "scRNA-Hematopoiesis-Granja-2019.rds"
+    )
+}
+
+# ranged summarized Experiment
+seRNA <- readRDS("scRNA-Hematopoiesis-Granja-2019.rds")
+seRNA
+```
+
+
+```{r}
+table(colData(seRNA)$BioClassification)
+```
+
+
+### Unconstrained & Constrained integration
+
+**Unconstrained integration:**
+
+* takes all cells of scATAC-seq data and attempts to align them to any of the 
+scRNA-seq cells
+* this provides preliminary cluster identities which will serve as prior knowledge
+for the constrained integration
+* the quality can be improved by constraining the integration
+
+
+The integration matrix will be stored in the ArchR project via `matrixName`. The 
+other parameters will be saved in the cellColData (nameCell = store matched cell ID
+from scRNA-seq, nameGroup = store group ID from scRNA-seq, nameScore = store 
+cross-platform integration score)
+
+```{r}
+proj <- addGeneIntegrationMatrix(
+    ArchRProj = proj, 
+    useMatrix = "GeneScoreMatrix",
+    matrixName = "GeneIntegrationMatrix",
+    reducedDims = "IterativeLSI",
+    seRNA = seRNA,
+    addToArrow = FALSE,
+    groupRNA = "BioClassification", # Bioclassification is a column in
+    # the colData of the seRNA object, this column will be used to 
+    # determine the subgroupings specified in groupList for constrained integration
+    # it is also used for the nameGroup output of this function
+    nameCell = "predictedCell_Un", # name the cellColData for the 
+    # predicted scRNA-seq cell in the specified ArchRProject ->
+    # will add a column to the project
+    nameGroup = "predictedGroup_Un",
+    nameScore = "predictedScore_Un"
+)
+```
+
+
+
+**Constrained integration:**
+
+* prior knowledge of the cell types is used to limit the search space of the alignment
+-> e.g. if we know that clusters A, B, C in scATAC-seq data correspond to 3
+different T cell clusters and Clusters X, Y in scRNA-seq data correspond to 
+two T cell clusters, we could try to specifically align these cells
+
+1. Identify which cell types from scRNA-seq data are most abundant in scATAC-seq clusters?
+2. confusion matrix is created that looks at the intersection of Clusters 
+and predicted group which contains the cell types as identfied by scRNA-seq
+3. This shows which scRNA-seq cell type is most abundant in each of the scATAC clusters
+
+```{r}
+# in the confusion matrix the rows correspond to clusters in scATAC data
+# the columns correspond to cell types in scRNA-seq data
+cM <- as.matrix(confusionMatrix(proj$Clusters, proj$predictedGroup_Un))
+cM[, 1:5]
+
+preClust <- colnames(cM)[apply(cM, 1 , which.max)]
+cbind(preClust, rownames(cM)) #Assignments
+```
+
+
+
+
+
+Which cells in the scRNA-seq correspond to Tcells and NK cells? 
+
+Use pattern matching strings in combination with grep to extract the scATAC-seq 
+clusters that correspond to these scRNA-seq cell types.
+| acts as an or statement, so we search for any row in the preClust column of the
+confusion matix that matches a scRNA-seq cluster number.
+
+```{r}
+unique(proj$predictedGroup_Un)
+```
+
+```{r}
+cTNK <- paste0(paste0(19:25), collapse = "|")
+cTNK
+
+cNonTNK <- paste0(c(paste0("0", 1:9), 10:13, 15:18), collapse = "|")
+cNonTNK
+```
+
+```{r}
+clustTNK <- rownames(cM)[grep(cTNK, preClust)]
+clustTNK
+
+clustNonTNK <- rownames(cM)[grep(cNonTNK, preClust)]
+clustNonTNK
+```
+
+Identify scRNA-seq cells corresponding to the same cell types.
+
+```{r}
+#RNA get cells in these categories
+rnaTNK <- colnames(seRNA)[grep(cTNK, colData(seRNA)$BioClassification)]
+head(rnaTNK)
+
+# get cell not in these categories
+rnaNonTNK <- colnames(seRNA)[grep(cNonTNK, colData(seRNA)$BioClassification)]
+head(rnaNonTNK)
+```
+
+
+We create a nested list with two vectors of cell IDs
+```{r}
+groupList <- SimpleList(
+    TNK = SimpleList(
+        ATAC = proj$cellNames[proj$Clusters %in% clustTNK],
+        RNA = rnaTNK
+    ),
+    NonTNK = SimpleList(
+        ATAC = proj$cellNames[proj$Clusters %in% clustNonTNK],
+        RNA = rnaNonTNK
+    )    
+)
+
+groupList[[1]][[1]] %>% head
+```
+
+```{r}
+proj <- addGeneIntegrationMatrix(
+    ArchRProj = proj, 
+    useMatrix = "GeneScoreMatrix",
+    matrixName = "GeneIntegrationMatrix",
+    reducedDims = "IterativeLSI",
+    seRNA = seRNA,
+    addToArrow = FALSE, 
+    groupList = groupList,
+    groupRNA = "BioClassification",
+    nameCell = "predictedCell_Co",
+    nameGroup = "predictedGroup_Co",
+    nameScore = "predictedScore_Co"
+)
+```
+
+
+
+```{r}
+pal <- paletteDiscrete(values = colData(seRNA)$BioClassification)
+pal
+```
+
+
+Plot the integration
+
+```{r, fig.width=10, fig.height=10}
+p1 <- plotEmbedding(
+    proj, 
+    colorBy = "cellColData", 
+    name = "predictedGroup_Un", 
+    pal = pal
+)
+
+
+p2 <- plotEmbedding(
+    proj, 
+    colorBy = "cellColData", 
+    name = "predictedGroup_Co", 
+    pal = pal
+)
+
+
+ggAlignPlots(p1, p2, type = "h")
+```
+
+```{r}
+saveArchRProject(proj, outputDirectory = "ArchRVignette", load = FALSE)
+```
+
+
+
+
