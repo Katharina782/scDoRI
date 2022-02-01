@@ -1,10 +1,25 @@
 ---
-title: "ArchR"
-output: html_document
+title: "ArchR First steps"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 5
+    code_folding: hide
+    toc_float: true
+    code_download: true
+    theme: cosmo
+    highlight: textmate
 ---
 
+
+<style>
+body {
+text-align: justify}
+</style>
+
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE, cache = TRUE)
+knitr::opts_chunk$set(cache = TRUE, autodep = TRUE, 
+                      collapse = TRUE, message = FALSE)
 knitr::opts_knit$set(root.dir = "/omics/groups/OE0533/internal/katharina/scDoRI/ArchR")
 setwd("/omics/groups/OE0533/internal/katharina/scDoRI/ArchR/")
 
@@ -20,34 +35,20 @@ files are grouped into a project, a compressed R data file. The Files are access
 in minimal chunks (parallel read and write operations). Therefore, in memory we
 do not have any large file sizes.
 
-To select high quality celsl TSS enrichment scores are used. 
+To select high quality cells TSS enrichment scores are used. 
 
-#### Doublet detection-and-removal algorithm
-Heterotypic doublets are identified by generating a collection of synthetic doublets.
-These synthetic doublets are projected into low-dimensional embeddings. Searching
-for nearest neighbours to the synthetic doublets we can identify doublets in the
-dataset. This outperforms the prediction of doublets using fragment number
-(ROC-AUC). (Compared to demuxlet as ground truth)
 
-#### Dimensionality reduction
-
-* two other algorithms:
-  + latent semantic indexing (LSI) in Signac
-  + landmark diffusion maps (LDM) in SnapATAC
   
-* ArchR: optimized iterative LSI method 
-  + exhibits less susceptibility to batch effects 
-  + focuses on most variable features 
-  1. create a LSI REduction from a subset of the total cells
-  2. linearly project the remaining cells into this subspace with LSI proejection
-  (based on SVD)
+# First steps in ArchR
   
-  
-  ### Load libraries
+## Load libraries
   
 ```{r}
 library(ArchR)
+library(knitr)
+library(rhdf5)
 #library(caret)
+h5disableFileLocking()
 ```
   
   
@@ -60,15 +61,15 @@ inputFiles <- getTutorialData("Hematopoiesis")
 addArchRGenome("hg19")
 ```
 
-Create Arrow Files
+## Create Arrow Files
 
-1. read accexxible fragments 
+1. read accessible fragments 
 2. calculate QC information for each cell (TSS enrichment scores and nucelosome info)
 3. filter cells based on QC parameters
 4. create genome-wide tile matrix using 500-bp bins
 5. create GeneScoreMatrix using gene annotation
 
-**TSS enrichment score**
+### TSS enrichment score
 = signal to noise calculation
 The reads around a particular TSS are collected and aggregated to form a distribution
 of reads which is centered on th TSS. this distribution extends to 1000bp in both 
@@ -88,7 +89,8 @@ ArrowFiles <- createArrowFiles(
   minTSS = 4, #Dont set this too high because you can always increase later
   minFrags = 1000, # minimum number of mapped fragments required
   addTileMat = TRUE,
-  addGeneScoreMat = TRUE
+  addGeneScoreMat = TRUE,
+  subThreading = FALSE
 )
 ```
 
@@ -98,7 +100,7 @@ ArrowFiles
 ```
 
 
-### QC
+## Quality Control
 
 1. the number of **unique nuclear fragments** (as opposed to mitochondrial fragments)
 2. **signal-to-background ratio** -> if this is low this probably corresponds to dying
@@ -107,9 +109,16 @@ cells where the entire genome allows random transposition
 expected that there are depletions of fragments of this length at regular intervals
 
 
-### Inferring Doublets
+## Inferring Doublets
 
-Should be removed, because they can interfere with downstream analysis
+Should be removed, because they can interfere with downstream analysis.
+
+**Doublet detection-and-removal algorithm:**
+Heterotypic doublets are identified by generating a collection of synthetic doublets.
+These synthetic doublets are projected into low-dimensional embeddings. Searching
+for nearest neighbours to the synthetic doublets we can identify doublets in the
+dataset. This outperforms the prediction of doublets using fragment number
+(ROC-AUC). (Compared to demuxlet as ground truth)
 
 ```{r}
 doubScores <- addDoubletScores(
@@ -122,7 +131,7 @@ doubScores <- addDoubletScores(
 ```
 
 
-### Create ArchRProject
+## Create ArchRProject
 
 An ArchR Project is initialized with some important attributes:
 
@@ -144,21 +153,25 @@ proj <- ArchRProject(
 )
 ```
 
+**Access ArchR:**
+
 Cell Names:
 
-```{r}
+```{r class.source = 'fold-show'}
 # cell names
 proj$cellNames[1:5]
 ```
 
 Sample Names:
 
-```{r}
+```{r class.source = 'fold-show'}
 proj$Sample[1:5]
 length(proj$Sample)
 ```
+
 For each cell there is a TSS enrichment score:
-```{r}
+
+```{r class.source = 'fold-show'}
 proj$TSSEnrichment %>% head
 quantile(proj$TSSEnrichment)
 ```
@@ -167,7 +180,7 @@ quantile(proj$TSSEnrichment)
 
 * numerically 
 
-```{r}
+```{r class.source = 'fold-show'}
 # note that that only 100 cells are accessed
 proj[1:100,]
 ```
@@ -175,13 +188,13 @@ proj[1:100,]
 
 * by cell name
 
-```{r}
+```{r class.source = 'fold-show'}
 proj[proj$cellNames[1:100], ]
 ```
 
 * keep specific samples
 
-```{r}
+```{r class.source = 'fold-show'}
 idxSample <- BiocGenerics::which(proj$Sample %in% "scATAC_BMMC_R1")
 cellsSample <- proj$cellNames[idxSample]
 proj[cellsSample, ]
@@ -189,45 +202,46 @@ proj[cellsSample, ]
 
 * specific cutoff for TSS enrichment score
 
-```{r}
+```{r class.source = 'fold-show'}
 idxPass <- which(proj$TSSEnrichment >= 8)
 cellsPass <- proj$cellNames[idxPass]
 proj[cellsPass, ]
 ```
 
 
-```{r}
+```{r class.source = 'fold-show'}
 # What information does the vector of TSS enrichment contain?
 class(proj$TSSEnrichment)
 length(proj$TSSEnrichment)
 length(proj$nFrags)
 ```
+
+
 ```{r}
 getAvailableMatrices(proj)
 ```
 
 
-##### Obtaining columns from cellColData
+### Obtaining columns from cellColData
 
 * retrieve metadata columns, e.g. number of unique nuclear fragments per cell
 
-```{r}
+```{r,  results = "asis"}
 df <- getCellColData(proj, select = "nFrags")
-df %>% head
-dim(df)
+df %>% head %>% kable()
 ```
 
 * operations on a given column
 
-```{r}
+```{r,  results = "asis"}
 df <- getCellColData(proj, select = c("log10(nFrags)", "nFrags -1 "))
 
-df %>% head
+df %>% head %>% kable()
 ```
 
-### Plot QC metrics 
+# Plot QC metrics 
 
-e.g. -log10(unique fragments) vs TSS enrichment
+## -log10(unique fragments) vs TSS enrichment
 
 * TSS enrichment score = signa-to-background 
 * number of unique fragments -> cells with very few fragments do not have enough 
@@ -252,7 +266,7 @@ p <- ggPoint(
 p
 ```
 
-### Ploting sample statistics
+### Plotting sample statistics
 
 * when we have distinct samples, it can be important to compare various
 metric between samples
@@ -314,13 +328,13 @@ differences in quality
   + clear peak in the center 
   + smaller shoulder peak right of the center caused by well positioned +1 nucleosome
 
-```{r, fig.width=5, fig.height=5}
-#p1 <- plotFragmentSizes(ArchRProj = proj)
-#p2 <- plotTSSEnrichment(ArchRProj = proj)
-#ggAlignPlots(p1, p2, type = "v")
+```#{r, fig.width=5, fig.height=5}
+p1 <- plotFragmentSizes(ArchRProj = proj)
+p2 <- plotTSSEnrichment(ArchRProj = proj)
+ggAlignPlots(p1, p2, type = "v")
 ```
 
-### Filtering Doublets
+# Filtering Doublets
 
 With the function `addDoubleScores()` information on predicted doublets has been
 added. Filter the putative doublets. They are not removed physically, but 
@@ -349,7 +363,18 @@ proj <- filterDoublets(ArchRProj = proj)
 ```
 
 
-### Dimensionality reduction & Clustering
+# Dimensionality reduction & Clustering
+
+* two other algorithms:
+  + latent semantic indexing (LSI) in Signac
+  + landmark diffusion maps (LDM) in SnapATAC
+  
+* ArchR: optimized iterative LSI method 
+  + exhibits less susceptibility to batch effects 
+  + focuses on most variable features 
+  1. create a LSI REduction from a subset of the total cells
+  2. linearly project the remaining cells into this subspace with LSI proejection
+  (based on SVD)
 
 Because we can have maximally two accessible alleles per cell, the scATAC-seq data
 is sparse. Therefore, the majority of accessible regions are not transposed, meaning 
@@ -363,15 +388,25 @@ approach for dimensionality reduction is a **layered dimensionality reduction**.
 processing. Different samples are the "documents" and different regions/peaks are
 the "words". 
 
-#### Iterative LSI
+## Iterative LSI
 
-1. compute term frequency by depth normalizating per single cell
-2. normalize by inverse document frequency -> weights features by how often they 
-occur (differentiate between more specific and commonly accessible features)
-3. you get a **TF-IDF** matrix (term frequency-inverse document frequency) which
-tells us how important a region/peak is to a sample
-4. SVD identifies the most valuable information across samples & represented 
-in a lower dimensional space
+1. compute term frequency (depth normalization to 10,000 per single cell)
+
+$TF = \frac{C_{ij}}{F_{j}}$ with $C_{ij}$ being the total number of counts for peak i in cell j and $F_{j}$ being the total number of counts in cell j.
+
+2. Inverse document frequency 
+  * weights features by how often they occur 
+  * more weight to less frequent peaks
+
+$IDF = \frac{N}{n_{p}}$ with N being the total number of cells in the dataset and $n_{p}$ being the total number of coutns for peak i across all cells.
+
+3. The term frequency TF is normalized by the inverse document frequncy IDF. You get a **TF-IDF** matrix (term frequency-inverse document frequency) which
+tells us how important a region/peak is to a sample. In other words you transform a binary matrix to a non-binary matrix.
+
+$TF-IDF = \log{1 + (TF * IDF) 10^{4}}$
+
+4. SVD identifies the most valuable information across samples. Then 
+we can use these most valuable features to represent the data in a lower dimensional space
 5. Clusters are identified with Seurat's Shared Nearest Neighbor clustering
 6. Sum accessibility across all single cells in each cluster -> log-normalize
 7. Identify most variable features across the clusters
@@ -394,7 +429,7 @@ Using iterative LSI reduces batch effects. If you see some batch effects you cou
 try to add more LSI iterations and start from a lower intitial clustering 
 resolution. Also, the number of variable features can be lowered.  
 
-#### Estimated LSI
+## Estimated LSI
 
 * for extremely large scATAC-seq datasets
 
@@ -409,7 +444,7 @@ memory usage. The landmark set size depends on cell type proportions.
 
 * iterative LSI dimensionality reduction -> explore the parameters!
 
-#### Batch correct with Harmony
+## Batch correct with Harmony
 
 * dimensionality reduction object from ArchR isp passed to Harmony
 
@@ -434,8 +469,9 @@ proj <- addIterativeLSI(
 )
 ```
 
+## Clustering
 
-* Calling clusters in this new space uses the Seurat's graph clustering function as default clustering method. The Seurat 
+Calling clusters in this new space uses the Seurat's graph clustering function as default clustering method. The Seurat 
 method first computs KNN graph and then a  modularity optimization
 technique to cluster the cells (iteratively group cells togetether
 with Louvian algorithm using 10 random starts). Another option 
@@ -450,7 +486,7 @@ proj <- addClusters(input = proj, reducedDims = "IterativeLSI")
 ```
 
 
-### Visualizing a UMAP embedding
+# Visualizing a UMAP embedding
 
 * uses uwot package
 * various attributes of the data can be visualized
@@ -472,7 +508,7 @@ p2 <- plotEmbedding(ArchRProj = proj, colorBy = "cellColData", name = "Clusters"
 ggAlignPlots(p1, p2, type = "h")
 ```
 
-### Cluster assignment using gene scores
+# Cluster assignment using gene scores
 
 For the toy dataset marker genes of known hematopoietic regulators
 can be used. Using MAGIC we add imputation weights to smooth the dropout noise in the gene scores
@@ -490,6 +526,7 @@ markerGenes  <- c(
     "CD3D", "CD8A"#TCells
   )
 ```
+
 ```{r}
 p <- plotEmbedding(
     ArchRProj = proj, 
@@ -498,11 +535,12 @@ p <- plotEmbedding(
     embedding = "UMAP",
     imputeWeights = getImputeWeights(proj)
 )
+p
 ```
 
 
 
-### Visualizing Genome Browser Tracks
+# Visualizing Genome Browser Tracks
 
 Browse local chromatin accessibility at marker genes. Plot genome
 browser tracks per cluster
@@ -529,7 +567,7 @@ saveArchRProject(proj, outputDirectory = "ArchRVignette", load = FALSE)
 ```
 
 
-## Integration with scRNA-seq
+# Integration with scRNA-seq
 
 * the scATAC-seq gene score matrix is compared with the scRNA-seq gene expression
 matrix
@@ -561,9 +599,9 @@ table(colData(seRNA)$BioClassification)
 ```
 
 
-### Unconstrained & Constrained integration
+## Unconstrained & Constrained integration
 
-**Unconstrained integration:**
+### Unconstrained integration:
 
 * takes all cells of scATAC-seq data and attempts to align them to any of the 
 scRNA-seq cells
@@ -599,7 +637,7 @@ proj <- addGeneIntegrationMatrix(
 
 
 
-**Constrained integration:**
+### Constrained integration:
 
 * prior knowledge of the cell types is used to limit the search space of the alignment
 -> e.g. if we know that clusters A, B, C in scATAC-seq data correspond to 3
@@ -620,8 +658,6 @@ cM[, 1:5]
 preClust <- colnames(cM)[apply(cM, 1 , which.max)]
 cbind(preClust, rownames(cM)) #Assignments
 ```
-
-
 
 
 
@@ -698,14 +734,16 @@ proj <- addGeneIntegrationMatrix(
 ```
 
 
-
 ```{r}
 pal <- paletteDiscrete(values = colData(seRNA)$BioClassification)
 pal
 ```
 
+### Compare unconstrained and constrained integration
 
-Plot the integration
+Plot the integration for unconstrained (left) and constrained (right)
+integration. We overlay the scRNA-seq cell types on the ATAC-seq data
+based on the unconstrained/constrained integration. In the plot below the difference is very subtle, because the cell types of interest are very distinct. There are subtle differences, for example in the T cell clusters. Could we also try this approach with constraining other cell types? Can we combine different constrains/groups?
 
 ```{r, fig.width=10, fig.height=10}
 p1 <- plotEmbedding(
@@ -731,6 +769,110 @@ ggAlignPlots(p1, p2, type = "h")
 saveArchRProject(proj, outputDirectory = "ArchRVignette", load = FALSE)
 ```
 
+## Adding pseudo-scRNA-seq profiles for each ATAC-seq cell
+
+If we are happy with the integration results we add them to the Arrow Files. Then we can compare the linked gene expression with the inferred gene expression obtained through the gene scores. 
+
+```{r}
+#~5 minutes
+proj <- addGeneIntegrationMatrix(
+  ArchRProj = proj, 
+  useMatrix = "GeneScoreMatrix",
+  matrixName = "GeneIntegrationMatrix",
+  reducedDims = "IterativeLSI",
+  seRNA = seRNA,
+  addToArrow = TRUE,
+  force= TRUE,
+  groupList = groupList,
+  groupRNA = "BioClassification",
+  nameCell = "predictedCell",
+  nameGroup = "predictedGroup",
+  nameScore = "predictedScore",
+  
+)
+
+
+getAvailableMatrices(proj)
+
+proj <- addImputeWeights(proj)
+```
 
 
 
+```{r}
+markerGenes  <- c(
+  "CD34", #Early Progenitor
+  "GATA1", #Erythroid
+  "PAX5", "MS4A1", #B-Cell Trajectory
+  "CD14", #Monocytes
+  "CD3D", "CD8A", "TBX21", "IL7R" #TCells
+)
+
+# gene expression values from GeneIntegrationMatrix
+p1 <- plotEmbedding(
+  ArchRProj = proj, 
+  colorBy = "GeneIntegrationMatrix", 
+  name = markerGenes, 
+  continuousSet = "horizonExtra",
+  embedding = "UMAP",
+  imputeWeights = getImputeWeights(proj)
+)
+
+
+# Gene score values from GeneScoreMatrix
+
+p2 <- plotEmbedding(
+  ArchRProj = proj, 
+  colorBy = "GeneScoreMatrix", 
+  continuousSet = "horizonExtra",
+  name = markerGenes, 
+  embedding = "UMAP",
+  imputeWeights = getImputeWeights(proj)
+)
+```
+
+In the plot below you can see the gene expression values from
+integration with the scRNA-seq data.
+
+```{r}
+p1c <- lapply(p1, function(x){
+  x + guides(color = FALSE, fill = FALSE) + 
+    theme_ArchR(baseSize = 6.5) +
+    theme(plot.margin = unit(c(0, 0, 0, 0), "cm")) +
+    theme(
+      axis.text.x=element_blank(), 
+      axis.ticks.x=element_blank(), 
+      axis.text.y=element_blank(), 
+      axis.ticks.y=element_blank()
+    )
+})
+
+p2c <- lapply(p2, function(x){
+  x + guides(color = FALSE, fill = FALSE) + 
+    theme_ArchR(baseSize = 6.5) +
+    theme(plot.margin = unit(c(0, 0, 0, 0), "cm")) +
+    theme(
+      axis.text.x=element_blank(), 
+      axis.ticks.x=element_blank(), 
+      axis.text.y=element_blank(), 
+      axis.ticks.y=element_blank()
+    )
+})
+
+do.call(cowplot::plot_grid, c(list(ncol = 3), p1c))
+```
+
+In the plot below you can see the gene score values which we calculate
+above.
+
+```{r}
+do.call(cowplot::plot_grid, c(list(ncol = 3), p2c))
+```
+
+
+The results from the two different methdos for inferring gene expression are similar, but not identical. 
+
+
+```{r}
+saveArchRProject(proj, outputDirectory = "ArchRVignette", load = FALSE)
+```
