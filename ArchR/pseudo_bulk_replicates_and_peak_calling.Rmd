@@ -1,0 +1,314 @@
+---
+title: "Pseudo-bulk replicates & Peak calling"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 5
+    code_folding: hide
+    toc_float: true
+    code_download: true
+    theme: cosmo
+    highlight: textmate
+---
+
+<style>
+body {
+text-align: justify}
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(cache = TRUE, autodep = TRUE, 
+                      collapse = TRUE, message = FALSE)
+knitr::opts_knit$set(root.dir = "/omics/groups/OE0533/internal/katharina/scDoRI/ArchR")
+setwd("/omics/groups/OE0533/internal/katharina/scDoRI/ArchR/")
+
+set.seed(1)
+```
+
+# Load Libraries & ArchR object
+
+```{r}
+library(ArchR)
+library(rhdf5)
+library(reticulate)
+#library(caret)
+h5disableFileLocking()
+
+# load ArchR project
+proj2 <- loadArchRProject(path = "Vignette_object_1/")
+
+# for R to find macs2 we will use a conda environment where the latest version 
+# of macs2 is installed
+conda_list()[[1]][2] %>% use_condaenv(required = TRUE)
+
+```
+
+
+# Pseudo-bulk replicates
+
+For statistical signficance we need replicates, which is not given 
+in the binary single cell data obtained from scATAC-seq. Therefore,
+we create pseudo-bulk replicates. We group single cells and the data 
+of all the cells in the group are combined into a pseudo-sample that 
+resembles a bulk-ATAC-seq experiment. For each cell grouping several 
+pseudo-bulks are created, resulting in pseudo-bulk replicates. The main
+assumption here is that the cells we group together are so similar that
+we are not interested in the differences between them. We group cells
+together based on clusters and known cell identities. 
+
+Parameters:
+
+* minReps, maxReps: min. and max. number of replicates
+* minCells, maxCells: min. and max. number of cells per replicate
+* SamplingRatio: sampling ratio to use if a particular group of cells
+does not have required number
+e.g. 0.8 means that 80% of cells can be sampled without replacement for a particular replicate
+
+Using the generated pseudo-bulk replicates, peak calling can be done. 
+
+The `groupBy` parameter specifies for which groups pseudo-bulk replicates should be made. With pseudo-bulks you can call peaks next, 
+because we do not want to call peaks on all single cells together. 
+
+```{r}
+proj2 <- addGroupCoverages(ArchRProj = proj2, groupBy = "Clusters2")
+```
+
+
+
+# Peak calling
+
+Because the scATAC-seq data is binary, peaks cannot be called on single cells. Using pseuod-bulk replicates we can assess the reproducibility 
+of our peak calls. 
+
+ArchR uses a fixed peak width as opposed to a variable peak width, 
+because then peak length does not need to be normalized and it is
+easier to merge peaks from different saples. The peak length used is 
+501bp, since most peaks are smaller than 501 bp. 
+
+
+## Iterative Overlap
+
+1. rank peaks by their signficance
+2. the most significant peak is retained
+3. any peak overlapping with the most significant peak is removed
+4. the process is repeated for the remaining peaks
+
+
+For example, if we hae 3 ell types A, B, C and 3 pseudo-bulk replicates for each:
+
+1. Call peaks for each pseudo-bulk replicate individually
+2. The first iteration of iterative overlap would then be performed on all pseuo-
+bulk replicates from a single cell type. (It is important to normalize peak 
+significance across different samples beforehand)
+3. Check the reproducibility of each peak across pseud9-bulk replicates and only
+keep the peaks that pass a threshold
+4. You now have a single merged peak set for each of the 3 cell types
+5. proceed with iterative overlap remove to merge A, B, C peak sets (It is 
+important to re-normalize the peak significance across different cell types at 
+this step)
+
+**At the end you are left with a single merged peak set of fixed-width peaks.**
+
+```{r}
+proj2 <- addReproduciblePeakSet(
+    ArchRProj = proj2, 
+    groupBy = "Clusters2",
+    pathToMacs2 = "/home/k552k/.conda/envs/scDori/bin/macs2"
+)
+```
+
+We can retrieve this peak set as a `GRanges` object. Which will contain an annotation
+for the group from which each peak originated. This does not mean that the given 
+peak was only called in that group, but rather that the annotated group 
+had the highest normalized significanc for that peak call. 
+
+A **GRanges** object is a vector of genomic locations and associated annotations.
+
+* sequence name
+* interval
+* strand
+* optional metadata column
+
+
+```{r}
+getPeakSet(proj2)
+```
+
+```
+saveArchRProject(ArchRProj = proj2, outputDirectory = "Save_Vignette_object_2", load = FALSE)
+```
+
+```{r}
+proj3 <- addPeakMatrix(proj2)
+```
+
+
+# Marker Peaks
+
+```{r}
+table(proj3$Clusters2)
+```
+
+We want to account for differences in data quality amongst the cell groups
+by setting the `bias` parameter to account for TSS enrichment and the number 
+of uique fragments per cell. The function uses a pairwise wilcoxon test to compare
+different groups among each other. The output will be a Summarized Experiment 
+containing a few assays.
+
+```{r}
+markersPeaks <- getMarkerFeatures(
+    ArchRProj = proj3, 
+    useMatrix = "PeakMatrix", 
+    groupBy = "Clusters2",
+  bias = c("TSSEnrichment", "log10(nFrags)"),
+  testMethod = "wilcoxon"
+)
+```
+
+We can extract dataframes for each cell group. For example in the table below
+the marker peaks from B cells are shown. 
+
+```{r, results = "asis"}
+markerList <- getMarkers(markersPeaks, cutOff = "FDR <= 0.01 & Log2FC >= 1")
+markerList 
+
+markerList$B %>% head %>% knitr::kable()
+```
+
+
+Instead of returning a list of dataframes, we can also return a `GRangesList` 
+object.
+
+```{r}
+markerList <- getMarkers(markersPeaks, cutOff = "FDR <= 0.01 & Log2FC >= 1",
+                         returnGR = TRUE)
+markerList
+
+markerList$B
+```
+
+## Plotting Marker Peaks
+
+Why do I only get 12,774 markers, while in the Tutorial the yget 40,034 markers.
+
+### Heatmap 
+
+```{r}
+ht <- markerHeatmap(
+  seMarker = markersPeaks,
+  cutOff = "FDR <= 0.01 & Log2FC >= 0.5",
+  transpose = TRUE
+)
+
+ht2 <- markerHeatmap(
+  seMarker = markersPeaks,
+  cutOff = "FDR <= 0.01 & Log2FC >= 0.5",
+  transpose = FALSE
+)
+```
+
+```{r}
+draw (ht, heatmap_legend_side = "bot", annotation_legend_side = "bot")
+```
+```{r}
+draw(ht2)
+```
+
+
+### MA Plot
+
+* for visual representation of genomic data
+* differences between measurements taken in two samples 
+* M = log ratio (difference between logs)
+$M = \log_{2}(R/G) = \log_{2}(R)-\log_{2}(G)$ with $R$ and $G$ being two different
+conditions. 
+* A = average log intensity
+$A = \frac{1}{2}\log_{2}(R)+\log_{2}(G)$
+* Peaks with similar accessibility values in both conditions will cluster around
+$M=0$. These indicate no significant differences between the conditions.
+* Points away from $M=0$ indicate significant differences. In our case a region
+is more accessible if the point is above and less accessible if the point is 
+below $M=0$. 
+* The plot does not show p-values, therefore, we cannot tell which differences 
+are statistically significant. For this we would have to use a volcano plot. 
+
+For example we can plot marker peaks (up/downregulated) in Erythroid cell type
+compared to the other cell types.
+
+```{r}
+ma <- plotMarkers(seMarker = markersPeaks, name = "Erythroid", 
+                 cutOff = "FDR <= 0.01 & Log2FC >= 1", plotAs = "MA") + 
+  labs(title = "Erythroid cells")
+ma
+```
+
+### Volcano Plot 
+
+```{r}
+vp = plotMarkers(seMarker = markersPeaks, name = "Erythroid",
+                 cutOff = "FDR <= 0.01 & Log2FC >= 1", plotAs = "Volcano")
+vp + labs(title = "Erythroid cells")
+```
+
+### Marker Peaks in Browser Tracks
+
+We can also overlay the peaks with the Browser Tracks. We pass the peak
+regions to the `features` parameter in `plotBrowserTrack()`. An additional 
+BED-style track will be added to the track plot. 
+
+For example we can plot the GATA1 gene via the `geneSymbol` parameter.
+
+```{r}
+p <- plotBrowserTrack(
+    ArchRProj = proj3, 
+    groupBy = "Clusters2", 
+    geneSymbol = c("GATA1"),
+    features =  getMarkers(markersPeaks, cutOff = "FDR <= 0.1 & Log2FC >= 1", returnGR = TRUE)["Erythroid"],
+    upstream = 50000,
+    downstream = 50000, 
+    title = "GATA1"
+)
+
+
+grid::grid.newpage()
+grid::grid.draw(p$GATA1)
+```
+
+## Pairwise testing between groups
+
+We can also perform differential test between two cell types.
+
+For example, we can test for differences between "Erythroid" and "Progenitor" 
+cell type. 
+
+```{r}
+markerTest <- getMarkerFeatures(
+  ArchRProj = proj3,
+  useMatrix = "PeakMatrix",
+  groupBy = "Clusters2",
+  testMethod = "wilcoxon",
+  bias = c("TSSEnrichment", "log10(nFrags)"),
+  useGroups = "Erythroid",
+  bgdGroups = "Progenitor"
+)
+```
+```{r}
+ma <- plotMarkers(seMarker = markerTest, # a summarized experiment obejct returned by the getMarkerFeatures() function
+                  name = "Erythroid",
+                  cutOff = "FDR <= 0.1 & abs(Log2FC) >= 1",
+                  plotAs = "MA")
+ma + labs(title = "Erythroid vs. Progenitor")
+```
+```{r}
+v <- plotMarkers(seMarker = markerTest,
+                 name = "Erythroid",
+                 cutOff = "FDR <= 0.1 & abs(Log2FC) >= 1",
+                 plotAs = "Volcano")
+v + labs(title = "Erythroid vs. Progenitor")
+```
+
+```
+
+saveArchRProject(ArchRProj = proj2, outputDirectory = "Save_Vignette_object_3", load = FALSE)
+```
+
