@@ -1,0 +1,256 @@
+---
+title: "Motif & Feature Enrichment"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 5
+    code_folding: hide
+    toc_float: true
+    code_download: true
+    theme: cosmo
+    highlight: textmate
+---
+
+<style>
+body {
+text-align: justify}
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(cache = TRUE, autodep = TRUE, 
+                      collapse = TRUE, message = FALSE)
+knitr::opts_knit$set(root.dir = "/omics/groups/OE0533/internal/katharina/scDoRI/ArchR")
+setwd("/omics/groups/OE0533/internal/katharina/scDoRI/ArchR/")
+
+set.seed(1)
+```
+
+# Load Libraries & ArchR object
+
+```{r}
+library(ArchR)
+library(rhdf5)
+library(reticulate)
+library(tidyverse)
+#library(caret)
+h5disableFileLocking()
+
+# load ArchR project
+proj <- loadArchRProject(path = "Save_Vignette_object_3/")
+
+# for R to find macs2 we will use a conda environment where the latest version 
+# of macs2 is installed
+#conda_list()[[1]][2] %>% use_condaenv(required = TRUE)
+
+```
+
+
+# Motif and Feature Enrichment
+
+We have identified robust peak sets and now we want to know which TFs bind to
+the peak region and thereby create an accessible region. Are the marker peaks 
+enriched for binding sites of specific TFs? For example, a lineage-defining TF
+will often be enriched in cell-type specific peaks. We might also want to know 
+if a cell type-specific peak is enriched for CHIP-seq peaks or other features. 
+
+## Motif Enrichment in Differential Peaks
+
+We will first add the motif annotations to the ArchRProject. We create a binary 
+matrix, where the presence or absence of a motif in a peak is indicated. Using
+the list of differential peaks more accessible in "Erythroid" than in "Progenitor" cells,
+we can define the peaks we want to test for motif enrichment. Using the
+`peakAnnoEnrichment()` function we test for enrichment. 
+
+A **hypergeometric test** is used to test the probability of observing the motif
+at the given frequency by chance, comparing with a background set of peaks matched 
+for GC content.
+
+
+
+```{r}
+# add motif annotations
+# this function requires the ChromVar package
+proj <- addMotifAnnotations(ArchRProj = proj,
+                            motifSet = "cisbp",
+                            name = "Motif")
+
+# get markers between erythroid and progenitor cells
+markerTest <- getMarkerFeatures(
+  ArchRProj = proj,
+  useMatrix = "PeakMatrix",
+  groupBy = "Clusters2",
+  testMethod = "wilcoxon",
+  bias = c("TSSEnrichment", "log10(nFrags)"),
+  useGroups = "Erythroid",
+  bgdGroups = "Progenitor"
+)
+
+# test for motif enrichment
+motifsUp <- peakAnnoEnrichment(
+  seMarker = markerTest,
+  ArchRProj = proj
+)
+
+motifsUp
+```
+
+For plotting the motifs we create a dataframe containing the motifs, p-values and
+the significance rank. In the dataframe we can see that the most motifs enriched 
+in the accessbile peaks are GATA transcription factors which is a TF very 
+important for erythroid differentiation.
+
+```{r, results = "asis"}
+df <- data.frame(TF = rownames(motifsUp), mlog10Padj = assay(motifsUp)[,1])
+
+df <- df %>% arrange(desc(mlog10Padj))
+# create a sequenc of desired length for the rank of each TF motif
+df$rank <- seq_len(nrow(df)) 
+df %>% head %>% knitr::kable()
+```
+
+In the plot below the TF motifs are sorted by rank and colored by significance 
+of their enrichment. 
+
+```{r}
+ggUp <- ggplot(df, aes(rank, mlog10Padj, color = mlog10Padj)) +
+  geom_point(size = 1) +
+  ggrepel::geom_label_repel(
+    data = df[rev(seq_len(30)), ], aes (x = rank, y = mlog10Padj, label = TF),
+    size = 1.5, nudge_x = 2,
+    color = "black",
+    max.overlaps = 30
+  ) +
+  theme_ArchR() +
+  ylab("-log10(P-adj) Motif Enrichment") +
+  xlab("Rank sorted TFs enrichment") +
+  scale_color_gradientn(colors = paletteContinuous(set = "comet")) +
+  labs(title = "Motifs enriched in peaks more accessible in Eryhtroid cells")
+ggUp
+```
+
+The same plot can be crated for motifs enriched in progenitor cells. For this we
+use peaks with `Log2FC <= 0.5`. 
+```{r, results = "asis"}
+motifsDo <- peakAnnoEnrichment(
+    seMarker = markerTest,
+    ArchRProj = proj,
+    peakAnnotation = "Motif",
+    cutOff = "FDR <= 0.1 & Log2FC <= -0.5"
+  )
+
+# create a dataframe for plotting
+df <- data.frame(TF = rownames(motifsDo), mlog10Padj = assay(motifsDo)[,1])
+df <- df %>% arrange(desc(mlog10Padj))
+df$rank <- seq_len(nrow(df))
+df %>% head %>% knitr::kable()
+```
+
+```{r}
+ggDo <- ggplot(df, aes(rank, mlog10Padj, color = mlog10Padj)) + 
+  geom_point(size = 1) +
+  ggrepel::geom_label_repel(
+        data = df[rev(seq_len(30)), ], aes(x = rank, y = mlog10Padj, label = TF), 
+        size = 1.5,
+        nudge_x = 2,
+        color = "black"
+  ) + theme_ArchR() + 
+  ylab("-log10(FDR) Motif Enrichment") +
+  xlab("Rank Sorted TFs Enriched") +
+  scale_color_gradientn(colors = paletteContinuous(set = "comet"))
+
+ggDo
+```
+
+
+## Motif Enrichment in Marker Peaks
+
+We can also perform motif enrichment on marker peaks. 
+
+```{r}
+# get marker peaks
+markersPeaks <- getMarkerFeatures(
+    ArchRProj = proj, 
+    useMatrix = "PeakMatrix", 
+    groupBy = "Clusters2",
+  bias = c("TSSEnrichment", "log10(nFrags)"),
+  testMethod = "wilcoxon"
+)
+
+# get enriched motifs
+enrichMotifs <- peakAnnoEnrichment(
+  seMarker = markersPeaks, # summarized exeriment object
+  ArchRProj = proj,
+  peakAnnotation = "Motif", # peak annotation object used for the hypergeometric testing
+  cutOff = "FDR <= 0.01 & Log2FC >= 0.5"
+)
+
+enrichMotifs
+```
+
+The motif enrichments across all cell groups can be plotted in a heatmap. We will
+limit the total number of motifs shown per cell type to seven. 
+
+```{r, fig.width=10}
+heatmapEM <- plotEnrichHeatmap(enrichMotifs, n = 7, transpose = TRUE)
+ComplexHeatmap::draw(heatmapEM)
+```
+
+
+
+# ChromVAR Deviations Enrichment with ArchR
+
+TF motif enrichments can help us predict which regulatory factors are most 
+active in a specific cell type. The enrichments do not take into account 
+the insertion sequence bias of the Tn5 transposase and they are not calculated on 
+a per-cell basis.
+
+With ChromVAR we can predict TF enrichment per cell from sparse chromatin 
+accessibility data. ChromVAR uses a lot of memory and runtime. In ArchR implements
+the same chromVAR analysis workflow by analyzing sample sub-matrices independently.
+
+Outputs
+
+1. **deviations:** A bias corrected measurement on how much the per-cell accessibility
+of a given motif differs from the expected accessibility based on average of
+all cells
+2. **z-score:** for each bias-corrected deviation across all cells. The deviation
+score is correlated with the per-cell read depth. A higher read depth means that 
+you can have more confidence that a motif is actually enriched and that the deivation
+is not occuring by chance.
+
+First, a group of Background peaks needs to be chose. ChromVAR samples peaks based
+on similarity in GC-content and number of fragments across all samples using the 
+Mahalonobis distance. Afterwards, we are ready to compute per-cell deviations 
+across all motif annotations. 
+
+Per-cell motif activity. Find differentially active motifs between cell types.
+
+```{r}
+proj <- addBgdPeaks(proj)
+
+proj <- addDeviationsMatrix(
+  ArchRProj = proj,
+  peakAnnotation = "Motif",
+  force = TRUE
+)
+getAvailableMatrices(proj)
+```
+
+Below you can have a look at the deviations and a plot of deviations. The seqnames 
+are not chormosomes, but instead this column contains `deviations` and `z`. The 
+matrix stored as `MotifMatrix` is a sparse amtrix. For further analysis you might
+have to subset the matrix based on the seqnames. 
+
+```{r, results = "asis"}
+# have  a look at the dataframe
+# the variability of the deviation will be ranked and the top variable anntoations
+# will be labelled
+getVarDeviations(proj, name = "MotifMatrix", plot = FALSE) %>%
+  head %>% knitr::kable()
+
+# plot the deviations
+plotVarDev <- getVarDeviations(proj, name = "MotifMatrix", plot = TRUE)
+plotVarDev
+```
+
+
