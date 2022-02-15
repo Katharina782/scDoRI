@@ -31,7 +31,8 @@ set.seed(1)
 library(ArchR)
 library(rhdf5)
 library(reticulate)
-#library(caret)
+library(tidyverse)
+
 h5disableFileLocking()
 
 # load ArchR project
@@ -76,6 +77,7 @@ proj2 <- addGroupCoverages(ArchRProj = proj2, groupBy = "Clusters2")
 
 
 # Peak calling
+https://hbctraining.github.io/Intro-to-ChIPseq/lessons/05_peak_calling_macs.html
 
 Because the scATAC-seq data is binary, peaks cannot be called on single cells. Using pseuod-bulk replicates we can assess the reproducibility 
 of our peak calls. 
@@ -109,6 +111,8 @@ this step)
 
 **At the end you are left with a single merged peak set of fixed-width peaks.**
 
+Cell are then defined as accessible at a particular peak if a read from that cell overlapped the peak. 
+
 ```{r}
 proj2 <- addReproduciblePeakSet(
     ArchRProj = proj2, 
@@ -138,6 +142,71 @@ getPeakSet(proj2)
 saveArchRProject(ArchRProj = proj2, outputDirectory = "Save_Vignette_object_2", load = FALSE)
 ```
 
+
+```{r}
+peakset <- as_data_frame(getPeakSet(proj2))
+
+p1 <- peakset %>% 
+  mutate(Group = str_extract(peakset[["GroupReplicate"]], "(?<!.)[^.]+")) %>% 
+  ggplot() +
+  geom_bar(aes(x = Group, fill = peakType), position = "dodge") +
+  labs(title = "type of peak")
+p1
+```
+
+
+```{r, fig.height=8, fig.width=8}
+p2 <- peakset %>% 
+  ggplot() +
+  geom_violin(aes(x = peakType, y = distToGeneStart, fill = peakType),
+              alpha = .5) +
+  geom_boxplot(aes(x = peakType, y = distToGeneStart, fill = peakType),
+               alpha = .1) +
+  labs(title = "distance to gene start")
+
+p3 <- peakset %>% 
+  ggplot() +
+  geom_violin(aes(x = peakType, y = distToGeneStart, fill = peakType), outlier.shape = NA,
+              alpha = .5) +
+  geom_boxplot(aes(x = peakType, y = distToGeneStart, fill = peakType), outlier.shape = NA,
+               alpha = .1) +
+  ylim(0, 500) +
+  labs(title = "distance to gene start (outliers removed)")
+
+p4 <- peakset %>% 
+  ggplot() +
+  geom_violin(aes(x = peakType, y = distToTSS, fill = peakType),
+                  alpha = .5) + 
+  geom_boxplot(aes(x = peakType, y = distToTSS, fill = peakType), alpha = .1) + 
+  labs(title = "distance to TSS")
+
+p5 <- peakset %>% 
+  ggplot() +
+  geom_violin(aes(x = peakType, y = distToTSS, fill = peakType),
+                  alpha = .5, outlier.shape = NA ) +
+  geom_boxplot(aes(x = peakType, y = distToTSS, fill = peakType), 
+               alpha = .1, outlier.shape = NA) +
+  ylim(0, 1500) +
+  labs(title = "distance to TSS (outliers removed")
+
+p6 <- peakset %>% 
+  mutate(Group = str_extract(peakset[["GroupReplicate"]], "(?<!.)[^.]+")) %>% 
+  ggplot() +
+  geom_histogram(aes(x = GC), bins = 100) +
+  labs(title = "GC content")
+
+p7 <- peakset %>% 
+  mutate(Group = str_extract(peakset[["GroupReplicate"]], "(?<!.)[^.]+")) %>% 
+  ggplot() +
+  geom_violin(aes(x = Group, y = GC, fill = Group), alpha = .5) +
+  geom_boxplot(aes(x = Group, y = GC, fill = Group), alpha = .1) +
+  labs(title = "GC content")
+
+
+gridExtra::grid.arrange(p2, p3, p4, p5, p6, p7, ncol = 2)
+```
+
+
 ```{r}
 proj3 <- addPeakMatrix(proj2)
 ```
@@ -151,7 +220,7 @@ table(proj3$Clusters2)
 
 We want to account for differences in data quality amongst the cell groups
 by setting the `bias` parameter to account for TSS enrichment and the number 
-of uique fragments per cell. The function uses a pairwise wilcoxon test to compare
+of unique fragments per cell. The function uses a pairwise wilcoxon test to compare
 different groups among each other. The output will be a Summarized Experiment 
 containing a few assays.
 
@@ -160,10 +229,45 @@ markersPeaks <- getMarkerFeatures(
     ArchRProj = proj3, 
     useMatrix = "PeakMatrix", 
     groupBy = "Clusters2",
-  bias = c("TSSEnrichment", "log10(nFrags)"),
-  testMethod = "wilcoxon"
+    bias = c("TSSEnrichment", "log10(nFrags)"),
+    testMethod = "wilcoxon"
 )
 ```
+
+
+For each peak we get 7 different assays, namely log2FC,  mean, FDR, Pval MeanDiff, 
+AUC and MeanBGD. Lets have a closer look at these results.
+
+We have 141.025 called peaks and their corresponding seqnames, index and start
+and end.
+
+```{r, resutls = "asis"}
+markersPeaks
+
+assays(markersPeaks)[[1]] %>% head %>% 
+  knitr::kable(caption = "log2FC")
+
+assays(markersPeaks)[[3]] %>% head %>% 
+  knitr::kable(caption = "False Discovery Rate")
+
+assays(markersPeaks)[[2]] %>% head %>% 
+  knitr::kable(caption = "mean")
+
+assays(markersPeaks)[[4]] %>% head %>% 
+  knitr::kable(caption = "p-value")
+
+assays(markersPeaks)[[5]] %>% head %>% 
+  knitr::kable(caption = "MeanDiff")
+
+assays(markersPeaks)[[6]] %>% head %>% 
+  knitr::kable(caption = "AUC")
+
+assays(markersPeaks)[[7]] %>% head %>% 
+  knitr::kable(caption = "MeanBGD")
+
+```
+
+
 
 We can extract dataframes for each cell group. For example in the table below
 the marker peaks from B cells are shown. 
@@ -174,7 +278,6 @@ markerList
 
 markerList$B %>% head %>% knitr::kable()
 ```
-
 
 Instead of returning a list of dataframes, we can also return a `GRangesList` 
 object.
@@ -187,9 +290,10 @@ markerList
 markerList$B
 ```
 
+
 ## Plotting Marker Peaks
 
-Why do I only get 12,774 markers, while in the Tutorial the yget 40,034 markers.
+Why do I only get 12,774 markers, while in the Tutorial they get 40,034 markers.
 
 ### Heatmap 
 
@@ -199,19 +303,10 @@ ht <- markerHeatmap(
   cutOff = "FDR <= 0.01 & Log2FC >= 0.5",
   transpose = TRUE
 )
-
-ht2 <- markerHeatmap(
-  seMarker = markersPeaks,
-  cutOff = "FDR <= 0.01 & Log2FC >= 0.5",
-  transpose = FALSE
-)
 ```
 
 ```{r}
 draw (ht, heatmap_legend_side = "bot", annotation_legend_side = "bot")
-```
-```{r}
-draw(ht2)
 ```
 
 

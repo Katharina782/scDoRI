@@ -1,0 +1,275 @@
+---
+title: "Integrative Analysis"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 5
+    code_folding: hide
+    toc_float: true
+    code_download: true
+    theme: cosmo
+    highlight: textmate
+---
+
+<style>
+body {
+text-align: justify}
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(cache = TRUE, autodep = TRUE, 
+                      collapse = TRUE, message = FALSE)
+knitr::opts_knit$set(root.dir = "/omics/groups/OE0533/internal/katharina/scDoRI/ArchR")
+setwd("/omics/groups/OE0533/internal/katharina/scDoRI/ArchR/")
+
+set.seed(1)
+```
+
+# Load Libraries & ArchR object
+
+```{r}
+library(ArchR)
+library(rhdf5)
+library(reticulate)
+library(tidyverse)
+#library(caret)
+h5disableFileLocking()
+
+# load ArchR project
+proj <- loadArchRProject(path = "Save_Vignette_object_4/")
+
+# for R to find macs2 we will use a conda environment where the latest version 
+# of macs2 is installed
+#conda_list()[[1]][2] %>% use_condaenv(required = TRUE)
+
+```
+
+# Create Low-Overlapping Aggregates of Cells
+
+If we compute correlation on sparse features, this can lead to noise in the 
+data. Therefore, first low-overlapping aggregates of single cells are created
+(see Cicero). Aggregates with >80% overlap with an other aggregate are removed. 
+
+* sampling with replacement, k = 100 (default) groups/cell
+* aggregate binary accessibility profiles for cells in each group
+
+
+# Co-accessibility
+
+Correlation in accessiblity between two peaks across many single cells. For example
+if peak A is accessible in a single cell is peak B also accessible? With this
+analysis we might learn if a certain enhancer peak is often co-accessible with
+a certain promoter peak in a particular cell type. 
+
+Keep in mind that cell-type specific peaks would be identified as co-accessible
+within this cell tpye. This strong correlation does not mean that there is an underlying co-accessibility!
+
+Query hits and subject hits are the indices of the two peaks that are 
+correlated. The correlation column contains the numeric correlation value of the
+accessibility between the two peaks. 
+
+```{r, results="asis"}
+# compute peak co-accessibility information and store it in the ArchR project
+proj <- addCoAccessibility(proj, 
+                           reducedDims = "IterativeLSI",
+                           k = 100,
+                           corCutOff = 0.75,
+                           # max. 80 % overlap between current group and all previous groups to permit
+                          # current grup to be added to the group list during k-nearest neighbor calculation
+                          overlapCutoff = 80,
+                          dimsToUse = 1:30,
+                           #number of k-nearest neighbor groupings to test for passing the supplied overlapCutoff
+                          knnIteration = 500 )
+
+# to retrieve the co-accessibility information we use getCoaccessibility()
+# return dataframe if returnLoops = FALSE
+coacc <- getCoAccessibility(
+    ArchRProj = proj,
+    # if the dimension has a correaltion to the sequencing depth 
+    # that is greater than the cutoff it will be excluded
+    corCutOff = 0.5,
+    resolution = 1,
+    returnLoops = FALSE # if TRUE it returns a GRangesObject
+)
+
+coacc %>% head %>% knitr::kable()
+```
+
+Metadata:
+
+```{r}
+metadata(coacc)
+dim(coacc)
+```
+
+
+We can also return the co-accessibility information as a loop track. The 
+resolution parameter sets the base-pair resolution of the loops. Resolution = 1
+creates loops that connect the center of each peak. 
+
+Where is the information contained which peaks are correlated?
+
+
+```{r}
+coacc <- getCoAccessibility(ArchRProj = proj,
+                            corCutOff = 0.5,
+                            resolution = 1,
+                            returnLoops = TRUE)
+
+
+coacc [[1]]
+```
+
+If we decrease the resolution to 1000 this could help with overlplotting of 
+co-accessibility interactions. The GRanges object will contain fewer total
+entries, 51,82 instaed of 54,002.
+
+```{r}
+cA <- getCoAccessibility(
+    ArchRProj = proj,
+    corCutOff = 0.5,
+    resolution = 1000,
+    returnLoops = TRUE
+)
+
+cA[[1]]
+```
+
+
+## Plot Browser Tracks of Co-accessibility
+
+We can add the co-accessibility information as loop tracks to our browser 
+track. For this we can use the `loops` parameter. 
+
+```{r}
+# marker genes we are interested in 
+markerGenes  <- c(
+    "CD34", #Early Progenitor
+    "GATA1", #Erythroid
+    "PAX5", "MS4A1", #B-Cell Trajectory
+    "CD14", #Monocytes
+    "CD3D", "CD8A", "TBX21", "IL7R" #TCells
+  )
+
+# plot
+p <- plotBrowserTrack(
+    ArchRProj = proj, 
+    groupBy = "Clusters2", 
+    geneSymbol = markerGenes, 
+    upstream = 50000,
+    downstream = 50000,
+    loops = getCoAccessibility(proj)
+)
+
+grid::grid.newpage()
+grid::grid.draw(p$CD14)
+```
+
+
+# Peak2Gene Linkage
+
+What is the difference between co-accessibility and peak2gene linkage? 
+
+Co-accessibility uses only scATAC-seq data looking for correlations in 
+accesssiblity. 
+
+Peak2Gene linkage in comparison also uses integrated scRNA-seq data to look
+for correlations between peak accessibility and gene expression. 
+
+Both approaces are solutions to a similar problem, but peak2gene linkage is 
+assumed to provide more biologically relevant regulatory links.
+
+
+All potential peak-to-gene linkages are identified and significant links 
+(R > 0.45 and FDR < 0.1) are kept (Higher correlation and variance suggest that 
+a link is not random noise.)
+
+```{r}
+proj <- addPeak2GeneLinks(
+  ArchRProj = proj,
+  reducedDims = "IterativeLSI",
+  useMatrix = "GeneIntegrationMatrix",
+  dimsToUse = 1:30,
+  k = 100, # number of k-nearest neighbors to use for creating single cell goups for correlation analysis
+  maxDist = 250000, # maximum allowable distance in basepairs between two peaks to consider for co-accessiblity
+  scaleTo = 10^4 # total insertion coutns from a group of cell is summed across all peaks and normalized to toal depth provided by scaleTo
+)
+```
+
+```{r, results = "asis"}
+p2g <- getPeak2GeneLinks(
+    ArchRProj = proj,
+    corCutOff = 0.45,
+    resolution = 1,
+    returnLoops = FALSE,
+    varCutOffATAC = .25, # minimum variance quantile of ATAC peak accessibility
+    varCutOffRNA = .25, # minimum variance quantile of the RNA gene expression when selecting links
+    FDRCutOff = 1e-04 # maximum numeric peak2gene FDR to return
+)
+
+as_data_frame(p2g) %>% arrange(desc(Correlation)) %>% 
+  head %>% knitr::kable(caption = "Peak-to-gene linkage")
+```
+In the metadata the peakSet with ranges, strand and chromosome are saved,
+as well as the gene set with ranges, strand, chromosome and gene name.
+
+```{r}
+metadata(p2g)
+```
+
+```{r}
+atac_knn <- readRDS("Save_Vignette_object_5/Peak2GeneLinks/seATAC-Group-KNN.rds")
+rna_knn <- readRDS("Save_Vignette_object_5/Peak2GeneLinks/seRNA-Group-KNN.rds")
+atac_knn
+```
+
+```{r}
+dim(assays(atac_knn)[[1]])
+#assays(atac_knn)[[1]] %>% head
+
+#assays(rna_knn)[[1]] %>% head
+```
+We can also return loops:
+
+```{r}
+p2g_loop <- getPeak2GeneLinks(
+    ArchRProj = proj,
+    corCutOff = 0.45,
+    resolution = 1000, # decrease resolution for plotting
+    returnLoops = TRUE
+)
+
+p2g_loop[[1]] %>% head
+```
+
+```{r}
+markerGenes  <- c(
+    "CD34", #Early Progenitor
+    "GATA1", #Erythroid
+    "PAX5", "MS4A1", #B-Cell Trajectory
+    "CD14", #Monocytes
+    "CD3D", "CD8A", "TBX21", "IL7R" #TCells
+  )
+
+p <- plotBrowserTrack(
+    ArchRProj = proj, 
+    groupBy = "Clusters2", 
+    geneSymbol = markerGenes, 
+    upstream = 50000,
+    downstream = 50000,
+    loops = getPeak2GeneLinks(proj)
+)
+
+grid::grid.newpage()
+grid::grid.draw(p$CD14)
+```
+
+## Heatmap of peak2gene linkage
+
+The rows are clustered using k-means clustering based on value passed to 
+parameter k (default = 25)
+
+```{r, fig.height=8, fig.width=10}
+plotPeak2GeneHeatmap(proj, groupBy = "Clusters2")
+```
+

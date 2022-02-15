@@ -201,14 +201,27 @@ ComplexHeatmap::draw(heatmapEM)
 
 TF motif enrichments can help us predict which regulatory factors are most 
 active in a specific cell type. The enrichments do not take into account 
-the insertion sequence bias of the Tn5 transposase and they are not calculated on 
-a per-cell basis.
+the insertion sequence bias of the Tn5 transposase and they are not calculated on a per-cell basis.
 
 With ChromVAR we can predict TF enrichment per cell from sparse chromatin 
 accessibility data. ChromVAR uses a lot of memory and runtime. In ArchR implements
 the same chromVAR analysis workflow by analyzing sample sub-matrices independently.
 
-Outputs
+
+**Input**
+
+* aligned sequencing reads
+* chromatin accessibility peaks (aggregate across single cells)
+* motif PWM (from cisBP)
+
+**How it works**
+
+For a motif and cell 
+1. compute the raw accessibility deviation = number of fragments mapping to 
+peaks with the motif - the average number of fragments across cells.
+2.  since the aggregation across 
+
+**Outputs**
 
 1. **deviations:** A bias corrected measurement on how much the per-cell accessibility
 of a given motif differs from the expected accessibility based on average of
@@ -226,18 +239,24 @@ across all motif annotations.
 Per-cell motif activity. Find differentially active motifs between cell types.
 
 ```{r}
+# get background peaks
 proj <- addBgdPeaks(proj)
 
+# compute per-cell deviations across all motif annotations
+# the deviation matrix will be motif x cell, containing information
+# whether there is a gain or loss in activity of the motif
 proj <- addDeviationsMatrix(
   ArchRProj = proj,
   peakAnnotation = "Motif",
   force = TRUE
 )
+
+# the MotifMatrix is now saved in our ArchRProject
 getAvailableMatrices(proj)
 ```
 
 Below you can have a look at the deviations and a plot of deviations. The seqnames 
-are not chormosomes, but instead this column contains `deviations` and `z`. The 
+are not chromosomes, but instead this column contains `deviations` and `z`. The 
 matrix stored as `MotifMatrix` is a sparse amtrix. For further analysis you might
 have to subset the matrix based on the seqnames. 
 
@@ -249,8 +268,251 @@ getVarDeviations(proj, name = "MotifMatrix", plot = FALSE) %>%
   head %>% knitr::kable()
 
 # plot the deviations
-plotVarDev <- getVarDeviations(proj, name = "MotifMatrix", plot = TRUE)
+plotVarDev <- getVarDeviations(proj, name = "MotifMatrix", plot = TRUE, n = 10)
 plotVarDev
 ```
 
+
+
+For downstream analysis you might want to extract a subset of motifs. To do this we use the `getFeatures()` function. This way you will get the names of 
+the features you are interested in. We can then plot the distribution 
+of ChromVAR deviation scores for each cluster. We use the impute weights to 
+smooth the signal across nearby cells. 
+
+```{r}
+# these are the features we want to extract
+motifs <- c("GATA1", "CEBPA", "EBF1", "IRF4", "TBX21", "PAX5")
+
+#save the deviation matrix for the marker motifs
+markerMotifs <- getFeatures(ArchRProj = proj, useMatrix = "MotifMatrix",
+                            select = paste(motifs, collapse = "|"))
+markerMotifs
+
+```
+
+```{r}
+markerMotifs <- grep("z", markerMotifs, value = TRUE)
+markerMotifs
+markerMotifs <- markerMotifs[markerMotifs %ni% "z:SREBF1_22"]
+markerMotifs
+```
+
+```#{r}
+proj <- addImputeWeights(proj)
+# the plot groups function groups, summarizes and plots data from
+# ArcR project for visual comparison
+p <- plotGroups(ArchRProj = proj, 
+                groupBy = "Clusters2",
+                colorBy = "MotifMatrix", 
+                name = markerMotifs, # if colorBy is Motif Matrix
+                # then this refers to motif names in the 
+                imputeWeights = getImputeWeights(proj))
+```
+
+
+
+
+```{r}
+proj <- addImputeWeights(proj)
+
+p <- plotEmbedding(
+    ArchRProj = proj, 
+    colorBy = "MotifMatrix", 
+    name = sort(markerMotifs), 
+    embedding = "UMAP",
+    imputeWeights = getImputeWeights(proj)
+)
+
+p1 <- lapply(p, function(x){
+    x + guides(color = FALSE, fill = FALSE) + 
+    theme_ArchR(baseSize = 6.5) +
+    theme(plot.margin = unit(c(0, 0, 0, 0), "cm")) +
+    theme(
+        axis.text.x=element_blank(), 
+        axis.ticks.x=element_blank(), 
+        axis.text.y=element_blank(), 
+        axis.ticks.y=element_blank()
+    )
+})
+#do.call(cowplot::plot_grid, c(list(ncol = 3),p1))
+```
+
+
+
+
+```{r}
+markerRNA <- getFeatures(ArchRProj = proj, useMatrix = "GeneScoreMatrix",
+                         select = paste(motifs, collapse = "|"))
+
+markerRNA <- markerRNA[markerRNA %ni% c("SREBF1","CEBPA-DT")]
+
+markerRNA
+
+
+p <- plotEmbedding(
+    ArchRProj = proj, 
+    colorBy = "GeneScoreMatrix", 
+    name = sort(markerRNA), 
+    embedding = "UMAP",
+    imputeWeights = getImputeWeights(proj)
+)
+
+p2 <- lapply(p, function(x){
+    x + guides(color = FALSE, fill = FALSE) + 
+    theme_ArchR(baseSize = 6.5) +
+    theme(plot.margin = unit(c(0, 0, 0, 0), "cm")) +
+    theme(
+        axis.text.x=element_blank(), 
+        axis.ticks.x=element_blank(), 
+        axis.text.y=element_blank(), 
+        axis.ticks.y=element_blank()
+    )
+})
+#do.call(cowplot::plot_grid, c(list(ncol = 3),p2))
+```
+
+In the plot below you can see the TF deviation z-scores. How do these deviation
+z-scores compare to the inferred gene expression from gene scores of the same
+TFs genes? From the integration of scATAC-seq data with scRNA-seq data we can also plot the gene expression for each of the TFs.
+
+
+```{r, fig.height = 15, fig.width=10}
+markerRNA <- getFeatures(proj, select = paste(motifs, collapse="|"),
+                         useMatrix = "GeneIntegrationMatrix")
+markerRNA <- markerRNA[markerRNA %ni% c("SREBF1","CEBPA-DT")]
+markerRNA
+
+p <- plotEmbedding(
+    ArchRProj = proj, 
+    colorBy = "GeneIntegrationMatrix", 
+    name = sort(markerRNA), 
+    embedding = "UMAP",
+    continuousSet = "blueYellow",
+    imputeWeights = getImputeWeights(proj)
+)
+
+
+p3 <- lapply(p, function(x){
+    x + guides(color = FALSE, fill = FALSE) + 
+    theme_ArchR(baseSize = 6.5) +
+    theme(plot.margin = unit(c(0, 0, 0, 0), "cm")) +
+    theme(
+        axis.text.x=element_blank(), 
+        axis.ticks.x=element_blank(), 
+        axis.text.y=element_blank(), 
+        axis.ticks.y=element_blank()
+    )
+})
+do.call(cowplot::plot_grid, c(list(ncol = 3),p1, p2, p3))
+```
+
+```{r}
+saveArchRProject(proj, outputDirectory = "Save_Vignette_object_4", 
+                 load = FALSE)
+
+```
+
+
+
+# Footprinting
+
+At a particular locus we want to predict the precise binding location of a 
+TF. DNA bases whcih are bound by a TF are actually protected from the Tn5
+transposase, but the bases next to the binding site are accessible. In the best case you would look at a particular region and determine binding location of 
+a TF. But the sequencing depth is not high enough for this. Therefore, we
+can take all peaks with for example a CTCF motif and make an aggregate TF 
+footprint for CTCF across the entire genome. 
+
+ArchR searches the peak regions for any sequence matching the TF bindign 
+motif. These motif annotations are added to the project as a binary matrix motifs x peaks (0 = motif not present, 1 = motif present). If we have motif 
+anntoations footprinting can be performed. The GenomicRanges object which is
+the input to the `getFootrpints()` function contains the position information 
+of the motifs. The function accounts for Tn5 insertion sequence bias. 
+
+
+```{r}
+# we create a GRangesList object where each TF motif  is represented
+# by a separate GRanges object
+motifPosition <- getPositions(proj)
+print(motifPosition$TFAP2B_1)
+```
+
+We are only  intrested in a few TFs which we extract from the GRangesList. 
+
+```{r}
+motifs <- c("GATA1", "CEBPA", "EBF1", "IRF4", "TBX21", "PAX5")
+markerMotifs <- unlist(lapply(motifs, function(x) 
+  grep(x, names(motifPosition), value = TRUE)))
+markerMotifs <- markerMotifs[markerMotifs %ni% "SREBF1_22"]
+print(markerMotifs)
+```
+
+The actual footprinting will be performed on pseudo-bulks which we have created previously. 
+
+```{r}
+seFoot <- getFootprints(
+  ArchRProj = proj, 
+  positions = motifPosition[markerMotifs], # only use a subset of TFs
+  # motifPositions is the GRangesList object and markerMotifs is the list of Tfs
+  groupBy = "Clusters2"
+)
+```
+
+## Normalization of footprints for Tn5 bias
+
+The k-mer (default length = 6) sequences around the insertion site are identified. 
+For each pseudo-bulk the single-base insertion sites are identified. Then these
+1bp sites are expaned to k-bp windows (-k/2 and +k/2-1 bp from the insertion). 
+A k-mer frequency table is created using the `oligonucleotidefrequency(w=k, simplify.as="collapse")` fuction. With the same function the expected k-mers
+are calculated genome-wide using the BSgenome-associated genome file. 
+
+```{r}
+plotFootprints(
+  seFoot = seFoot,
+  ArchRProj = proj, 
+  normMethod = "Subtract",
+  plotName = "Footprints-Subtract-Bias",
+  addDOC = FALSE,
+  smoothWindow = 5, 
+  plot = TRUE
+)
+```
+
+
+
+## Feature Footprints
+
+For example you can create a TSS insertion file. Footprinting is done on 
+group coverage files derived from pseuo-bulk replicates. TSS insertion profiles
+can be created without correction for Tn5 bias. 
+
+Here we extend the footprints to 2000 bp flanks. 
+```{r}
+# add group coverage if you haven't done it before
+#proj <- addGroupCoverages(ArchRProj = proj, groupBy = "Clusters2")
+
+
+
+seTSS <- getFootprints(
+  ArchRProj = proj, 
+  positions = GRangesList(TSS = getTSS(proj)), 
+  groupBy = "Clusters2",
+  flank = 2000
+)
+
+plotFootprints(
+  seFoot = seTSS,
+  ArchRProj = proj, 
+  normMethod = "None",
+  plotName = "TSS-No-Normalization",
+  addDOC = FALSE,
+  flank = 2000,
+  flankNorm = 100
+)
+```
+
+```
+saveArchRProject(proj, outputDirectory = "Save_Vignette_object_5/", load = FALSE)
+
+```
 

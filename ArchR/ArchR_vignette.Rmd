@@ -798,7 +798,7 @@ as_data_frame(colData(seRNA)) %>%
 ```
 
 
-```{r, fig.width=8, fig.height=10}
+```{r}
 df <- as_data_frame(colData(seRNA))
 
 p1 <- ggplot() +
@@ -818,9 +818,19 @@ geom_point(aes(x = df %>% pull("UMAP1"), y = df %>% pull("UMAP2"),
   ylab("umpa2") +
   labs(title = "scRNA-seq dataset - gene number")
 
-gridExtra::grid.arrange(p1, p2, ncol = 1)
+p3 <- df %>% ggplot() +
+  geom_point(aes(x = UMAP1, y = UMAP2, col = Group), size = .04) +
+  guides(col=guide_legend(title="Sample")) +
+  xlab("umap1") +
+  ylab("umpa2") +
+  labs(title = "scRNA-seq dataset - sample")
+
+p1
 ```
 
+```{r, fig.width=8}
+gridExtra::grid.arrange(p2, p3, ncol = 2)
+```
 
 ```{r}
 table(colData(seRNA)$BioClassification)
