@@ -1,0 +1,276 @@
+---
+title: "gastrulation_rna"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 5
+    code_folding: hide
+    toc_float: true
+    code_download: true
+    theme: cosmo
+    highlight: textmate
+---
+
+
+<style>
+body {
+text-align: justify}
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(cache = FALSE, autodep = TRUE, 
+                      collapse = TRUE, message = FALSE)
+knitr::opts_knit$set(root.dir = "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/")
+setwd("/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/")
+
+set.seed(1)
+```
+
+
+## Load libraries
+  
+```{r}
+#library(ArchR)
+library(knitr)
+library(tidyverse)
+library(Seurat)
+library(SeuratData)
+library(scater)
+library(zellkonverter)
+library(SingleCellExperiment)
+#library(SeuratDisk)
+#library(caret)
+#h5disableFileLocking()
+```
+
+We can read in the .h5ad file as a SummarizedCellExperiment
+
+```{r}
+#rna_gastr_SE <- readH5AD("anndata_rna.h5ad")
+```
+
+
+
+```{r}
+# read in the Count matrix as a dataframe
+matrix = read.csv("count_matrix_gastr.csv", row.names = 1, sep = ",")
+
+# convert dataframe to matrix
+matrix <- as.matrix(matrix)
+```
+
+```{r}
+# read in metadata
+obs = read.csv("anndata_as_csvs/obs.csv")
+
+# read in pca coordinates
+obsm = read.csv("anndata_as_csvs/obsm.csv")
+
+var = read.csv("anndata_as_csvs/var.csv")
+varm = read.csv("anndata_as_csvs/varm.csv")
+
+```
+
+
+
+```{r}
+# add cells and genes as row/column names respectively
+colnames(matrix) <- var$gene
+rownames(matrix) <- obs$cell
+
+# Have a look at th ematrix
+matrix[0:5, 0:5]
+
+# conver to sparse matrix
+matrix_sparse <- as(matrix, "sparseMatrix")
+matrix_sparse[0:5, 0:5]
+```
+
+
+```{r}
+# we transpose the count matrix to genes x cells
+gastr_seurat <- CreateSeuratObject(counts = t(matrix_sparse), project = "mouse_gastrulation")
+saveRDS(gastr_seurat, "Seurat_rna_gastr/Seurat_object1")
+```
+
+```{r}
+# we can add the metadata columns to the seurat object
+gastr_seurat <- AddMetaData(gastr_seurat, obs %>% column_to_rownames("cell"))
+```
+
+From the plots below it seems that all cells with percentage of mitochondrial 
+genes above 50% were removed.
+
+```{r}
+variables <- c("nFeature_RNA", "nCount_RNA", "mitochondrial_percent_RNA")
+map(variables, function(n){
+  df <- gastr_seurat@meta.data
+  ggplot(df) +
+    geom_boxplot(aes(x = df %>% pull("sample"), y = df %>% pull(n),
+                     fill = df %>% pull("sample")), alpha = .1) +
+    geom_violin(aes(x = df %>% pull("sample"), y = df %>% pull(n),
+                     fill = df %>% pull("sample")), alpha = .5) +
+    xlab("sample") +
+    ylab(paste0(n))
+})
+
+```
+
+### Normalize & Scale
+
+```{r}
+gastr_seurat <- gastr_seurat %>% 
+  NormalizeData(verbose = FALSE) %>% 
+  ScaleData(verbose = FALSE) %>%
+  FindVariableFeatures(verbose = FALSE)
+
+
+#gastr_seurat@assays$RNA@data[0:10, 0:10]
+```
+
+
+#### PCA
+
+I will proceed with 15 PCs.
+
+```{r}
+gastr_seurat <- RunPCA(gastr_seurat, features = VariableFeatures(gastr_seurat),
+             verbose = FALSE)
+
+ElbowPlot(gastr_seurat)
+```
+
+```{r}
+pca_plots <- comprehenr::to_list(for (i in 1:15)
+  DimPlot(gastr_seurat, reduction = "pca", dims = i:(i+1)) +
+    theme())
+
+pca_plots
+
+#do.call(gridExtra::grid.arrange, c(pca_plots, ncol = 3, nrows = 5))
+```
+
+### Clustering
+
+```{r}
+gastr_seurat <- FindNeighbors(gastr_seurat, verbose = FALSE)
+gastr_seurat <- FindClusters(gastr_seurat, verbose = FALSE, resolution = 0.9)
+gastr_seurat <- RunTSNE(gastr_seurat, verbose = FALSE, dims = 1:15)
+```
+
+
+### Visualization
+
+```{r}
+DimPlot(gastr_seurat, reduction = "tsne", pt.size = .1, group.by = "sample")
+```
+```{r, fig.width=10}
+DimPlot(gastr_seurat, reduction = "tsne", pt.size = .1, 
+        group.by = "celltype.mapped", label = TRUE, repel = TRUE) +
+  NoLegend()
+
+```
+
+```{r}
+DimPlot(gastr_seurat, reduction = "tsne", pt.size = .1, 
+        group.by = "seurat_clusters", label = TRUE) +
+  NoLegend()
+```
+
+```{r, fig.width=10, fig.height=8}
+p1 <- DimPlot(gastr_seurat, reduction = "tsne", pt.size = .1, group.by = "sample")
+
+p2 <- FeaturePlot(gastr_seurat, reduction = "tsne", pt.size = .1,
+            features = "nCount_RNA") +
+    scale_color_viridis_c() 
+p3 <- FeaturePlot(gastr_seurat, reduction = "tsne", pt.size = .1, features = "mitochondrial_percent_RNA") +
+    scale_color_viridis_c() 
+
+p4 <- FeaturePlot(gastr_seurat, reduction = "tsne", pt.size = .1, features = "nFeature_RNA") +
+    scale_color_viridis_c() 
+
+gridExtra::grid.arrange(p1, p2, p3, p4, ncol = 2, nrow = 2)
+```
+
+
+```{r, fig.width=10, fig.height=10}
+DimPlot(gastr_seurat, reduction = "tsne", pt.size = .1, 
+        group.by = "celltype.mapped", split.by = "sample", ncol = 2)
+```
+
+
+```{r, fig.width = 12, fig.height=8}
+gastr_seurat@meta.data %>% 
+  ggplot() +
+  geom_bar(aes(x = celltype.mapped)) +
+  facet_wrap(~orig.ident, nrow = 3) + 
+  theme(axis.text.x = element_text(angle = 45, vjust = 0.8, hjust=1)) +
+  ylab("percentage") +
+  xlab("celltype") +
+  labs(title = "Percentage of celltypes at different embryonic stages")
+
+
+gastr_seurat@meta.data %>%
+  group_by(orig.ident, celltype.mapped) %>% 
+  summarise(Total = n()) %>% 
+  mutate(freq = Total/sum(Total)) %>% 
+  ggplot(aes(x = celltype.mapped, y = freq, fill = orig.ident)) +
+  geom_bar(position = "dodge", stat = "identity") +
+  theme(axis.text.x = element_text(angle = 45, vjust = 0.8, hjust=1)) +
+  facet_wrap(~orig.ident, ncol = 1)
+```
+
+We can see that nascent mesoderm, epiblast and primitive streak are only present 
+at E75. Also, extraembryonice endoderm and ectoderm are highest and decrease 
+with progressing gastrulation. Forebrain/Midbrain/Hindbrain, neural crest and 
+neuromesodermal progenitor (NMP) cells are not present at 
+E7.5, but emerge at E8.0 and are present at even higher percentage at E8.5. The 
+same is true for Allantois, erythroids (produce red blood cells, remain in bone
+marrow)and cardiomyocytes.
+
+(Pijuan_Sala et.al, A single-cell molecular map of mouse
+gastrulation and early organogenesis, 2019, Nature)
+
+```{r, fig.width=10}
+
+gastr_seurat@meta.data %>% ggplot() +
+  geom_bar(aes(x = orig.ident, fill = celltype.mapped), alpha = .6)
+
+
+# plot the frequency of each cell type at each embryonic stage
+# all frequencies for one embryonic stage would add up to 0
+gastr_seurat@meta.data %>%
+  group_by(orig.ident, celltype.mapped) %>% 
+  summarise(Total = n()) %>% 
+  mutate(freq = Total/sum(Total)) %>% 
+  ggplot(aes(x = celltype.mapped, y = freq, fill = orig.ident)) +
+  geom_bar(position = "dodge", stat = "identity") +
+  theme(axis.text.x = element_text(angle = 45, vjust = 0.8, hjust=1)) 
+  
+```
+
+
+```{r}
+gastr_seurat@meta.data %>%
+  group_by(orig.ident, celltype.mapped) %>% 
+  summarise(Total = n()) %>% 
+  mutate(freq = Total/sum(Total)) %>% 
+  ggplot(aes(x = celltype.mapped, y = freq, fill = orig.ident)) +
+  geom_bar(position = "dodge", stat = "identity") +
+  theme(axis.text.x = element_text(angle = 45, vjust = 0.8, hjust=1)) +
+  facet_wrap(~orig.ident, ncol = 1)
+```
+
+
+```{r}
+gastr_seurat@meta.data %>% group_by(orig.ident, celltype.mapped) %>% 
+  summarise(n = n()) %>% mutate(freq = n/sum(n)) %>% 
+  ggplot() +
+  geom_density(aes(x = orig.ident, y = freq, fill = celltype.mapped)) 
+```
+
+
+```{r}
+
+```
+
