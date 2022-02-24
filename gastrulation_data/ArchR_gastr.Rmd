@@ -196,7 +196,7 @@ proj
 # read in existing project, so we don't have to rerun the creation
 #saveArchRProject(proj, outputDirectory = "01_FirstQC_ArchRobject/", load = FALSE)
 
-proj <- loadArchRProject(path = "FirstQC_ArchRobject/")
+proj <- loadArchRProject(path = "01_FirstQC_ArchRobject/")
 ```
 
 
@@ -492,7 +492,7 @@ In the processed data matrix we find 38,158 cells. Only 30,803 cells pass RNA
 QC. Of the scRNA-seq dataset only 30,282 out of 36,822 cells pass the scATAC-seq
 QC. This means that we have 30,282 cells with annotated celltypes. These are 
 the cells we want to use in the following analysis. We will, therefore, subset
-our dataset. We are now left with 28,060 cells for further analysis. Apparently 
+our dataset. We are now left with 28,154 cells for further analysis. Apparently 
 we filtered some cells not fitlered in the processed data.
 
 To visualize this in a better way create a Venn diagram.
@@ -510,31 +510,38 @@ filt_processed_atac <- proc_atac[ , colnames(proc_atac) %in% remove]
 # check the RNA dataset as well to see if the cells overlap with the ATAC cells
 proc_rna <- readH5AD("anndata_rna.h5ad")
 
-#
+
+# keep the cells which pass both rnaQC and atacQC
 keep <- colnames(proc_rna[,colnames(proc_rna) %in% colnames(proc_atac)])
+
+# remove the samples E8.75
+idxSample <- BiocGenerics::which(proj$Sample %in% c("E7.5_rep1", "E7.5_rep2",
+                                              "E8.0_rep1", "E8.0_rep2", 
+                                              "E8.5_rep1", "E8.5_rep2"))
+filt_proj <- proj[proj$cellNames[idxSample]]
 ```
 
-```{r}
-p1 <- ggVennDiagram(list(colnames(proc_atac), diff_hiv2, diff_hiv3),
+In the following plot you can see the cells which passed quality control for 
+scRNA-seq, scATAC-seq and which are included in the ArchR object with a very 
+loose quality control. We will proceed only using the overlap between the three,
+because for the overlap the celltypes are annotated already. These are also the 
+cells which are used as an input to scDori.
+
+```#{r}
+# plot the overlap between the different versions
+p <- ggVennDiagram::ggVennDiagram(list(colnames(proc_atac), colnames(proc_rna), filt_proj$cellNames),
               label_alpha = 0,
-              category.names= c("HIV1", "HIV2", "HIV3"),
+              category.names= c("processed ATAC", "processed RNA", "ArchR project"),
               #set.size = 20,
               label = "count",
               label_size = 6) +
    scale_fill_distiller(palette = "RdBu") +
   labs(title = "All TFs with different activity")
+p
 ```
 
 
 ```{r}
-# remove the samples E8.75
-idxSample <- BiocGenerics::which(filt$Sample %in% c("E7.5_rep1", "E7.5_rep2",
-                                              "E8.0_rep1", "E8.0_rep2", 
-                                              "E8.5_rep1", "E8.5_rep2"))
-filt_proj <- proj[proj$cellNames[idxSample]]
-
-
-
 # keep only the cells which passed RNA QC and ATAC QC -> celltype annotations
 overlap <- filt_proj$cellNames[filt_proj$cellNames %in% keep]
 
@@ -543,6 +550,8 @@ filt_proj <- filt_proj[overlap, ]
 
 # subset both the processed atac data and rna data to get only the overlapping cells
 rna_overlap <- proc_rna[, colnames(proc_rna) %in% overlap] 
+
+atac_overlap <- proc_atac[, colnames(proc_atac) %in% overlap]
 
 ```
 
@@ -623,9 +632,13 @@ try to add more LSI iterations and start from a lower initial clustering
 resolution. Also, the number of variable features can be lowered.  #
 
 
-```{r}
+```#{r}
+#filt_proj <- addIterativeLSI(ArchRProj = filt_proj, useMatrix = "TileMatrix", 
+                           #  name = "atac_LSI_25000")
+#filt_proj <- addIterativeLSI(ArchRProj = filt_proj, useMatrix = "TileMatrix", 
+                          #   name = "atac_LSI_50000")
 filt_proj <- addIterativeLSI(ArchRProj = filt_proj, useMatrix = "TileMatrix", 
-                             name = "IterativeLSI")
+                             name = "atac_LSI_100000")
 
 ```
 
@@ -650,30 +663,33 @@ proj <- addClusters(input = proj, reducedDims = "IterativeLSI")
 
 # Visualization
 
-We will add the celltype annotation from the processed data to our ArchR project.
+We will add the celltype annotation from the processed data to our ArchR 
+project. Since we already have annotations, we do not need to perform clustering.
 
-```{r}
-filt_proj <- addTSNE(ArchRProj =filt_proj, reducedDims = "IterativeLSI")
+```#{r}
+#filt_proj <- addTSNE(ArchRProj =filt_proj, reducedDims = "atac_LSI_100000")
 
-filt_proj <- addUMAP(ArchRProj =filt_proj, reducedDims = "IterativeLSI")
+filt_proj <- addUMAP(ArchRProj =filt_proj, reducedDims = "atac_LSI_100000")
 ```
 
 
 
 ```{r}
-# add celltype annotations
-include <- colnames(processed_atac)[colnames(processed_atac) %in% filt_proj$cellNames]
+filt_proj <- loadArchRProject(path = "02_filtered_annotated_ArchRobject/")
 
-filtered_processed_atac <- as.data.frame(colData(processed_atac)) %>% rownames_to_column("cell") %>% 
-  filter(cell %in% include)
 
-celltypes <- as.character(filtered_processed_atac$celltype.mapped)
+# add celltype annotations form the processed atac to the ArchR object
 
-names(celltypes) <- filtered_processed_atac$cell
+# get vector of celltype annotations
+celltypes <- as.character(atac_overlap$celltype.mapped)
+
+# name celltype vector with cell names
+names(celltypes) <- colnames(atac_overlap)
+
 filt_proj <- addCellColData(filt_proj,
                data = celltypes, 
                name = "celltypes",
-               cells = as.character(filtered_processed_atac$cell)
+               cells = colnames(atac_overlap)
                )
 ```
 
@@ -718,7 +734,7 @@ colPalette_celltypes = c('#532C8A',
  '#F6BFCB')
 
 celltypes <- (as.data.frame(getCellColData(filt_proj)) %>% group_by(celltypes) %>% 
-  summarise(n = n()))$celltypes
+ summarise(n = n()))$celltypes
 
 col <- setNames(colPalette_celltypes, celltypes)
 ```
@@ -726,7 +742,7 @@ col <- setNames(colPalette_celltypes, celltypes)
 
 ```{r, fig.width=10}
 df <- as_data_frame(cbind(getCellColData(filt_proj), getEmbedding(filt_proj)) ) %>%
-  rename(c(umap1 = IterativeLSI.UMAP_Dimension_1, umap2  = IterativeLSI.UMAP_Dimension_2))
+  rename(c(umap1 = atac_LSI_100000.UMAP_Dimension_1, umap2  = atac_LSI_100000.UMAP_Dimension_2))
 
 variables <- c("celltypes", "Sample", "nFrags", "DoubletScore")
 
@@ -776,9 +792,7 @@ do.call(gridExtra::grid.arrange, c(plot3, plots2, ncol=3))#, nrow = 2))
 
 
 ```{r}
-#saveArchRProject(filt_proj, outputDirectory = "annotated_ArchRobject", load = FALSE)
-
-filt_proj <- loadArchRProject(path = "annotated_ArchRobject/")
+#saveArchRProject(filt_proj, outputDirectory = "02_filtered_annotated_ArchRobject", load = FALSE)
 
 
 ```
@@ -792,7 +806,7 @@ filt_proj <- loadArchRProject(path = "annotated_ArchRobject/")
 
 
 ```{r}
-filt_proj <- addImputeWeights(filt_proj)
+filt_proj <- addImputeWeights(filt_proj, reducedDims = "atac_LSI_100000")
 ```
 
 ```{r}
@@ -823,7 +837,7 @@ do.call(gridExtra::grid.arrange, c(p, ncol = 3))
 Browse local chromatin accessibility at marker genes. Plot genome
 browser tracks per celltype 
 
-```{r}
+```#{r}
 p <- plotBrowserTrack(
     ArchRProj = filt_proj, 
     groupBy = "celltypes", 
@@ -844,7 +858,7 @@ stages_plots <- plotBrowserTrack(
 ```
 
 
-```{r}
+```#{r}
 markerGenes  <- c(
     "Dnmt3b",  # Epigblas
     "Ptn", # Forebrain/Midbrain/Hindbrain
@@ -869,7 +883,7 @@ signal/accessibility. Since some signals are only expected in a subset of the
 embryonic stages, the signals might be diluted if we look at all stages at once
 and take the mean accessibility over different stages. It would probabl
 
-```{r,fig.height=15, fig.width=10}
+```#{r,fig.height=15, fig.width=10}
 for (elem in p){
   grid::grid.newpage()
   grid::grid.draw(elem)
@@ -877,7 +891,7 @@ for (elem in p){
 
 ```
 
-```{r}
+```#{r}
 for (elem in stages_plots){
   grid::grid.newpage()
   grid::grid.draw(elem)
@@ -998,7 +1012,7 @@ We will now add the gene expression matrix to the ArchR object. First, we have t
 convert the Single Cell Experiment to a Summarized Experiment.
 
 ```{r}
-# create summarized experiment
+# create summarized experiment of the scRNA-seq
 seRNA <- SummarizedExperiment(assays = list(counts=rna_counts),
                           colData = colnames(rna_overlap),
                           rowRanges = granges)
@@ -1006,7 +1020,7 @@ seRNA
 
 
 # add RNA gene expression matrix to the ArchR object
-#filt_proj <- addGeneExpressionMatrix(input = filt_proj, seRNA = seRNA, force = TRUE)
+filt_proj <- addGeneExpressionMatrix(input = filt_proj, seRNA = seRNA, force = TRUE)
 
 
 # save the ArchR object with the added gene expression matrix
@@ -1016,14 +1030,59 @@ seRNA
 
 
 We will add a second LSI for the RNA data. The one based on the ATAC data is called 
-"IterativeLSI". We will call the one for the RNA data "LSI_RNA"
+"LSI_ATAC". We will call the one for the RNA data "LSI_RNA"
 
-```{r}
+```#{r}
 filt_proj <- addIterativeLSI(
-  filt_proj, 
-  useMatrix = "GeneExpressionMatrix",
-  dephtCol = "",
-  
+    ArchRProj = filt_proj, 
+    clusterParams = list(
+      resolution = 0.2, 
+      sampleCells = 10000,
+      n.start = 10
+    ),
+    saveIterations = FALSE,
+    useMatrix = "GeneExpressionMatrix", 
+    depthCol = "Gex_nUMI",
+    varFeatures = 2500,
+    firstSelection = "variable",
+    binarize = FALSE,
+    name = "LSI_RNA"
 )
 ```
+
+
+```#{r}
+filt_proj <- addIterativeLSI(
+  ArchRProj = filt_proj, 
+  saveIterations = FALSE,
+  clusterParams  = list(
+    resolution = 0.2,
+    sampleCells = 10000,
+    n.start = 10
+  ),
+  useMatrix = "GeneExpressionMatrix",
+  depthCol = "Gex_nUMI",
+  varFeatures = 100000, 
+  firstSelection = "Var", 
+  binarize = FALSE,
+  name = "LSI_RNA"
+)
 ```
+
+
+Now we will combine the two embeddings.
+
+```#{r}
+#Combined Dims
+proj <- addCombinedDims(proj, reducedDims = c("LSI_ATAC", "LSI_RNA"), name =  "LSI_Combined")
+
+#UMAPs
+proj <- addUMAP(proj, reducedDims = "LSI_ATAC", name = "UMAP_ATAC", minDist = 0.8, force = TRUE)
+
+proj <- addUMAP(proj, reducedDims = "LSI_RNA", name = "UMAP_RNA", minDist = 0.8, force = TRUE)
+
+proj <- addUMAP(proj, reducedDims = "LSI_Combined", name = "UMAP_Combined", minDist = 0.8, force = TRUE)
+
+
+```
+
