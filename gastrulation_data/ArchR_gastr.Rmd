@@ -89,8 +89,10 @@ is a binary matrix.
 
 In addition a GeneScoreMatrix is created. 
 
+I set the size of the maximum number of fragments included to 1e+07, instead
+of the default 1e+05, because we cut off some cells otherwise.
 
-```{r}
+```#{r}
 ArrowFiles <- createArrowFiles(
   inputFiles = inputFiles,
   sampleNames = names(inputFiles),
@@ -104,7 +106,7 @@ ArrowFiles <- createArrowFiles(
   minFragSize = 10,
   maxFragSize = 2000,
   QCDir = "QualityControl",
-  force = TRUE, # change to TRUE if you want to ovewrite the files
+  force = FALSE, # change to TRUE if you want to ovewrite the files
   # the length in bp that wraps around nucleosomes -> 
     #identify fragments as sub-nucleosome spanning, mono-nucleosome spanning or multi-nucleosome spanning
   nucLength = 147, 
@@ -148,7 +150,7 @@ dataset. This outperforms the prediction of doublets using fragment number
 **We can also identify doublets in the scRNA-seq space if we have paired data
 and remove the cells in this way.**
 
-```{r}
+```#{r}
 # for each sample provided doublet information will be assigned to each cell
 # this way we can remove doublet-based clusters downstream
 doubScores <- addDoubletScores(
@@ -177,7 +179,7 @@ An ArchR Project is initialized with some important attributes:
 * median TSS score & median number of fragments across all cells 
 and samples
 
-```{r}
+```#{r}
 proj <- ArchRProject(
   ArrowFiles = ArrowFiles, 
   outputDirectory = "gastrArchROutput",
@@ -192,6 +194,8 @@ proj
 
 ```{r}
 # read in existing project, so we don't have to rerun the creation
+#saveArchRProject(proj, outputDirectory = "01_FirstQC_ArchRobject/", load = FALSE)
+
 proj <- loadArchRProject(path = "FirstQC_ArchRobject/")
 ```
 
@@ -495,20 +499,32 @@ To visualize this in a better way create a Venn diagram.
 
 ```{r}
 # read in processed scATAC-seq data
-processed_atac <- readH5AD("anndata_atac.h5ad")
-processed_atac
+proc_atac <- readH5AD("anndata_atac.h5ad")
 
-remove <- (as.data.frame(colData(processed_atac)) %>% rownames_to_column("cell") %>% 
+# remove cells which do not pass the rnaQC
+remove <- (as.data.frame(colData(proc_atac)) %>% rownames_to_column("cell") %>% 
                           filter(pass_rnaQC == TRUE))[["cell"]]
 
-processed_atac <- processed_atac[ , colnames(processed_atac) %in% remove]
+filt_processed_atac <- proc_atac[ , colnames(proc_atac) %in% remove]
 
 # check the RNA dataset as well to see if the cells overlap with the ATAC cells
 proc_rna <- readH5AD("anndata_rna.h5ad")
 
 #
-keep <- colnames(proc_rna[,colnames(proc_rna) %in% colnames(processed_atac)])
+keep <- colnames(proc_rna[,colnames(proc_rna) %in% colnames(proc_atac)])
 ```
+
+```{r}
+p1 <- ggVennDiagram(list(colnames(proc_atac), diff_hiv2, diff_hiv3),
+              label_alpha = 0,
+              category.names= c("HIV1", "HIV2", "HIV3"),
+              #set.size = 20,
+              label = "count",
+              label_size = 6) +
+   scale_fill_distiller(palette = "RdBu") +
+  labs(title = "All TFs with different activity")
+```
+
 
 ```{r}
 # remove the samples E8.75
