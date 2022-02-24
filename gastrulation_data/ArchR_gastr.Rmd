@@ -100,11 +100,11 @@ ArrowFiles <- createArrowFiles(
   addTileMat = TRUE, 
   addGeneScoreMat = TRUE, # uses signal proximal to the TSS to estimate gene activity
   subThreading = FALSE,
-  maxFrags = 1e+05,
+  maxFrags = 1e+07,
   minFragSize = 10,
   maxFragSize = 2000,
   QCDir = "QualityControl",
-  force = FALSE, # change to TRUE if you want to ovewrite the files
+  force = TRUE, # change to TRUE if you want to ovewrite the files
   # the length in bp that wraps around nucleosomes -> 
     #identify fragments as sub-nucleosome spanning, mono-nucleosome spanning or multi-nucleosome spanning
   nucLength = 147, 
@@ -177,7 +177,7 @@ An ArchR Project is initialized with some important attributes:
 * median TSS score & median number of fragments across all cells 
 and samples
 
-```#{r}
+```{r}
 proj <- ArchRProject(
   ArrowFiles = ArrowFiles, 
   outputDirectory = "gastrArchROutput",
@@ -246,7 +246,7 @@ beforeQC <- map(stages, function(n) {
     labs(x = "Log10 Unique Fragments", y = "TSS Enrichment Score")
 })
   
-grid.arrange(grobs = beforeQC, ncol = 2)
+gridExtra::grid.arrange(grobs = beforeQC, ncol = 2)
 
 
 
@@ -300,7 +300,7 @@ samples <- map(unique(proj$Sample), function(name){
 
 #do.call("grid.arrange", c(samples, ncol=4))
 
-grid.arrange(grobs = samples, ncol = 2)
+gridExtra::grid.arrange(grobs = samples, ncol = 2)
 
 
 
@@ -356,8 +356,8 @@ p2 <- as_data_frame(getCellColData(proj)) %>%
   ggplot() +
   ggridges::geom_density_ridges(aes(x = log10_nFrags, y = Sample,
                                     fill = Sample), alpha = 0.8) +
-  theme(legend.position = "none") +
-  NoLegend()
+  theme(legend.position = "none") 
+
 
 p3 <- as_data_frame(getCellColData(proj)) %>% 
   mutate(Sample = str_remove(Sample, "scATAC_"), log10_nFrags = log10(nFrags)) %>% 
@@ -367,9 +367,7 @@ p3 <- as_data_frame(getCellColData(proj)) %>%
   theme(legend.position = "none") +
   labs(title = "number of fragments") +
     theme(axis.text.x = element_text(angle = 45, hjust = 1),
-        legend.position = "none") +
-  NoLegend()
-
+        legend.position = "none") 
 
 cowplot::plot_grid(p3, p2, p1, ncol = 3)
 ```
@@ -422,7 +420,7 @@ doublet_enrichment <- map(stages, function(n) {
   labs(title = paste0("Simulated Doublet Enrichment", n))
 })
   
-grid.arrange(grobs = doublet_enrichment, ncol = 2)
+gridExtra::grid.arrange(grobs = doublet_enrichment, ncol = 2)
 
 
 
@@ -443,7 +441,7 @@ doublet_density <- map(stages, function(n) {
 
 })
 
-grid.arrange(grobs = doublet_density, ncol = 2)
+gridExtra::grid.arrange(grobs = doublet_density, ncol = 2)
 ```
 
 With the function `addDoubleScores()` information on predicted doublets has been
@@ -493,6 +491,7 @@ the cells we want to use in the following analysis. We will, therefore, subset
 our dataset. We are now left with 28,060 cells for further analysis. Apparently 
 we filtered some cells not fitlered in the processed data.
 
+To visualize this in a better way create a Venn diagram.
 
 ```{r}
 # read in processed scATAC-seq data
@@ -513,7 +512,7 @@ keep <- colnames(proc_rna[,colnames(proc_rna) %in% colnames(processed_atac)])
 
 ```{r}
 # remove the samples E8.75
-idxSample <- BiocGenerics::which(proj$Sample %in% c("E7.5_rep1", "E7.5_rep2",
+idxSample <- BiocGenerics::which(filt$Sample %in% c("E7.5_rep1", "E7.5_rep2",
                                               "E8.0_rep1", "E8.0_rep2", 
                                               "E8.5_rep1", "E8.5_rep2"))
 filt_proj <- proj[proj$cellNames[idxSample]]
@@ -763,7 +762,7 @@ do.call(gridExtra::grid.arrange, c(plot3, plots2, ncol=3))#, nrow = 2))
 ```{r}
 #saveArchRProject(filt_proj, outputDirectory = "annotated_ArchRobject", load = FALSE)
 
-#filt_proj <- loadArchRProject(path = "annotated_ArchRobject/")
+filt_proj <- loadArchRProject(path = "annotated_ArchRobject/")
 
 
 ```
@@ -894,19 +893,18 @@ I get an error when trying to extract the tile matrix. Not sure what is happenin
 there. 
 
 ```{r}
+# extract gene score matrix
 gene_scores <- getMatrixFromProject(filt_proj, useMatrix = "GeneScoreMatrix")
 gene_scores_mtx <- assays(gene_scores)[[1]]
+
+# set names of the gene score matrix
 rownames(gene_scores_mtx) <- rowData(gene_scores)$name
-
-print(paste0("The number of genes in the ATAC-seq Gene Score Matrix is: ",
-             nrow(gene_scores_mtx)))
-
-print(paste0("The number of genes in the RNA-seq Gene Expression Matrix is: ",
-             dim(rna_overlap)[1]))
 
 #tile_matrix <- getMatrixFromProject(filt_proj, useMatrix = "TileMatrix", binarize = TRUE)
 
 ```
+
+
 
 ```{r}
 print(paste0("The number of genes in the ATAC-seq Gene Score Matrix is: ",
@@ -920,47 +918,65 @@ print(paste0("The number of genes found in both the Gene Expression Matrix and t
 ```
 
 
-Filter genes which are found in gene score matrix
-
-Reorder cell names to match
+Filter genes which are found in gene score matrix and gene expression matrix. Reorder
+cell names to match between gene scores and gene expression. Here it would
+be nice to show VennDiagrams to quickly be able to understand what the differences
+in genes are between ArchR object and gene expression matrix. Is there a way
+to include also genes which do not overlap?
 
 ```{r}
-# Try to reorder the cellnames
+# Try to reorder the cellnames to the 
+
+# this is the order of the cell names in the ArchR project gene score matrix
 order <- rownames(getCellColData(filt_proj))
 
+# extract the gene expression matrix 
 rna_counts <- assays(rna_overlap)[[1]]
 
-# reorder count matrix
+# reorder gene expression matrix cell names to match the cellnames of the ArchR object
 rna_counts <- rna_counts[, order]
 
-colnames(rna_counts) == rownames(getCellColData(filt_proj))
+# I checked that they are the same
+#colnames(rna_counts) == rownames(getCellColData(filt_proj))
 
+# get the gene names of the gene score matrix
 genes <- rownames(gene_scores_mtx)
 
+# subset the gene expression matrix to obtain only the genes found in the gene 
+# score matrix
 rna_counts <- rna_counts[rownames(rna_counts) %in% genes,]
 ```
 
-```{r}
-df <- rowData(rna_overlap) %>% as.data.frame() %>% filter(gene %in%genes)
+Next we have to create a GRanges object which will be used in the next step to 
+create a RangedSummarizedExperiment. When using the gene annotation metadata
+stored in the rowData of the RNA-SCE for creating this RangedSummarizedExperiment
+with the ArchRobject, I got an error message. This might have been due to the
+fact that the gene annotations looked different between the RNA-SCE and the ArchR
+object. Therefore, I tried using the same gene annotation as ArchR uses. In order 
+for this to work, we will have to exclude any genes which are not used by ArchR.
 
+```{r}
+# get the Granges object from the Archr project
+archr_granges <-getGenes(filt_proj)
+
+# filter for genes which are included in the gene expression matrix
+granges <- subset(archr_granges, symbol %in% rownames(rna_counts))
+```
+
+
+```#{r}
+
+# the problem here was that the gene annotations of the expression matrix
+did not match the gene annotations of the Archr object.
+
+df <- rowData(rna_overlap) %>% as.data.frame() %>% filter(gene %in%genes)
+df
 
 granges <- df %>% GRanges()
 granges
 
 
 ```
-
-
-Could it be that the gene annotations are different between the ArchR object and
-the RNA data?
-
-
-
-
-
-
-
-
 
 We will now add the gene expression matrix to the ArchR object. First, we have to 
 convert the Single Cell Experiment to a Summarized Experiment.
@@ -974,9 +990,14 @@ seRNA
 
 
 # add RNA gene expression matrix to the ArchR object
-filt_proj <- addGeneExpressionMatrix(input = filt_proj, seRNA = seRNA, force = TRUE)
+#filt_proj <- addGeneExpressionMatrix(input = filt_proj, seRNA = seRNA, force = TRUE)
 
+
+# save the ArchR object with the added gene expression matrix
+#saveArchRProject(filt_proj, outputDirectory = "03_added_gene_expression_ArchRobject", load = FALSE)
 ```
+
+
 
 We will add a second LSI for the RNA data. The one based on the ATAC data is called 
 "IterativeLSI". We will call the one for the RNA data "LSI_RNA"
@@ -989,4 +1010,4 @@ filt_proj <- addIterativeLSI(
   
 )
 ```
-
+```
