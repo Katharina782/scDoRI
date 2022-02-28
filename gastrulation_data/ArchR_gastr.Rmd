@@ -30,7 +30,7 @@ set.seed(1)
 ## Load libraries
 
 
-library(ArchR)
+suppressPackageStartupMessages(library(ArchR))
 library(knitr)
 library(rhdf5)
 library(uwot)
@@ -92,7 +92,7 @@ In addition a GeneScoreMatrix is created.
 I set the size of the maximum number of fragments included to 1e+07, instead
 of the default 1e+05, because we cut off some cells otherwise.
 
-```#{r}
+```{r}
 ArrowFiles <- createArrowFiles(
   inputFiles = inputFiles,
   sampleNames = names(inputFiles),
@@ -250,7 +250,7 @@ beforeQC <- map(stages, function(n) {
     labs(x = "Log10 Unique Fragments", y = "TSS Enrichment Score")
 })
   
-gridExtra::grid.arrange(grobs = beforeQC, ncol = 2)
+gridExtra::grid.arrange(grobs = beforeQC, ncol = 3)
 
 
 
@@ -282,7 +282,7 @@ metadata %>% ggplot() +
 
 ### ArchR plots
 
-```{r, fig.width=8, fig.height=15}
+```#{r, fig.width=8, fig.height=15}
 #create 3 separate dataframes for all samples
 samples <- map(unique(proj$Sample), function(name){
   index <- BiocGenerics::which(proj$Sample %in% name)
@@ -349,7 +349,7 @@ cowplot::plot_grid(p3, p2, p1, ncol = 3)
 ```
 
 
-```{r,fig.width=10}
+```{r,fig.width=15}
 p1 <- as_data_frame(getCellColData(proj)) %>% 
   mutate(Sample = str_remove(Sample, "scATAC_"), log10_nFrags = log10(nFrags)) %>% 
   ggplot() +
@@ -401,6 +401,8 @@ uniform distriution is assumed.
 
 The doublet density vissualizes where the synthetic doublets are located after 
 projecting them into the 2D embedding. 
+
+TODO: Chage path and directory to different name, because the are functions!
 
 ```{r, fig.width = 10, fig.height=10, results= "asis"}
 # the doublet information is saved in a simpleListobject
@@ -469,7 +471,7 @@ maximum would be filterRatio * 5000 / 100000 = filterRatio * 5000 * 0.05
 
 As can be seen below, in E7.5_rep1 no doublets are filtered. Why might that be?
 
-```{r class.source = 'fold-show'}
+```{r}
 # in our case we now have 10 251 cells as opposed to 10 661 cells before
 # filtering -> 410 cells were removed (3.85%)
 proj <- filterDoublets(ArchRProj = proj)
@@ -477,7 +479,7 @@ proj <- filterDoublets(ArchRProj = proj)
 
 
 
-# Use already annotated cells
+# Use annotated cells
 
 ## Subset cells
 
@@ -597,15 +599,15 @@ in cell j and $F_{j}$ being the total number of tiles with insertions in cell j.
   * weights features by how often they occur 
   * more weight to less frequent peaks
 
-$IDF_{i} =\log {\frac{N}{1 + DF_{i}}$ with N being the total number of cells in the dataset 
+$IDF_{i} =\log {\frac{N}{1 + DF_{i}}}$ with N being the total number of cells in the dataset 
 and $DF_{i}$ being the total number of cells (documents) in which the tile i is present.
 
 3. The term frequency TF is normalized by the inverse document frequncy IDF. 
-You get a **TF-IDF** matrix (term frequency-inverse document frequency) which
+You get a $TF-IDF$ matrix (term frequency-inverse document frequency) which
 tells us how important a region/peak is to a sample. In other words you transform
 a binary matrix to a non-binary matrix.
 
-$TF-IDF = \log{1 + TF{ij}} * IDF_{i} * 10^{4}}$
+$TF-IDF = \log{1 + TF{ij}} * IDF_{i} * 10^{4}$
 
 4. SVD identifies the most valuable information across samples. Then 
 we can use these most valuable features to represent the data in a lower dimensional space
@@ -632,13 +634,13 @@ try to add more LSI iterations and start from a lower initial clustering
 resolution. Also, the number of variable features can be lowered.  #
 
 
-```#{r}
+```{r}
 #filt_proj <- addIterativeLSI(ArchRProj = filt_proj, useMatrix = "TileMatrix", 
                            #  name = "atac_LSI_25000")
 #filt_proj <- addIterativeLSI(ArchRProj = filt_proj, useMatrix = "TileMatrix", 
                           #   name = "atac_LSI_50000")
-filt_proj <- addIterativeLSI(ArchRProj = filt_proj, useMatrix = "TileMatrix", 
-                             name = "atac_LSI_100000")
+#filt_proj <- addIterativeLSI(ArchRProj = filt_proj, useMatrix = "TileMatrix", 
+                  #           name = "atac_LSI_100000")
 
 ```
 
@@ -666,10 +668,8 @@ proj <- addClusters(input = proj, reducedDims = "IterativeLSI")
 We will add the celltype annotation from the processed data to our ArchR 
 project. Since we already have annotations, we do not need to perform clustering.
 
-```#{r}
-#filt_proj <- addTSNE(ArchRProj =filt_proj, reducedDims = "atac_LSI_100000")
-
-filt_proj <- addUMAP(ArchRProj =filt_proj, reducedDims = "atac_LSI_100000")
+```{r}
+#filt_proj <- addUMAP(ArchRProj =filt_proj, reducedDims = "atac_LSI_100000")
 ```
 
 
@@ -686,11 +686,11 @@ celltypes <- as.character(atac_overlap$celltype.mapped)
 # name celltype vector with cell names
 names(celltypes) <- colnames(atac_overlap)
 
-filt_proj <- addCellColData(filt_proj,
-               data = celltypes, 
-               name = "celltypes",
-               cells = colnames(atac_overlap)
-               )
+#filt_proj <- addCellColData(filt_proj,
+ #              data = celltypes, 
+  #             name = "celltypes",
+   #            cells = colnames(atac_overlap)
+    #           )
 ```
 
 ```{r}
@@ -784,7 +784,7 @@ plot1
 ```
 
 
-```{r, fig.width=15, fig.height=10}
+```{r, fig.width=10, fig.height=8}
 do.call(gridExtra::grid.arrange, c(plot3, plots2, ncol=3))#, nrow = 2))
 
 ```
@@ -832,12 +832,13 @@ do.call(gridExtra::grid.arrange, c(p, ncol = 3))
 ```
 
 
+
 # Visualizing Genome Browser Tracks
 
 Browse local chromatin accessibility at marker genes. Plot genome
 browser tracks per celltype 
 
-```#{r}
+```{r}
 p <- plotBrowserTrack(
     ArchRProj = filt_proj, 
     groupBy = "celltypes", 
@@ -847,26 +848,6 @@ p <- plotBrowserTrack(
      downstream = 50000
 )
 
-stages_plots <- plotBrowserTrack(
-    ArchRProj = filt_proj, 
-    groupBy = "Sample", 
-    geneSymbol = markerGenes, 
-    upstream = 50000,
-   
-     downstream = 50000
-)
-```
-
-
-```#{r}
-markerGenes  <- c(
-    "Dnmt3b",  # Epigblas
-    "Ptn", # Forebrain/Midbrain/Hindbrain
-    "Pou5f1", # Primitive Streak
-    "Myl7", # cardiomyocytes
-    "Hoxa10" #Allantois
-
-  )
 ```
 
 
@@ -883,7 +864,7 @@ signal/accessibility. Since some signals are only expected in a subset of the
 embryonic stages, the signals might be diluted if we look at all stages at once
 and take the mean accessibility over different stages. It would probabl
 
-```#{r,fig.height=15, fig.width=10}
+```{r,fig.height=15, fig.width=10}
 for (elem in p){
   grid::grid.newpage()
   grid::grid.draw(elem)
@@ -891,12 +872,6 @@ for (elem in p){
 
 ```
 
-```#{r}
-for (elem in stages_plots){
-  grid::grid.newpage()
-  grid::grid.draw(elem)
-}
-```
 
 
 # Different Time points
@@ -1008,6 +983,7 @@ granges
 
 ```
 
+
 We will now add the gene expression matrix to the ArchR object. First, we have to 
 convert the Single Cell Experiment to a Summarized Experiment.
 
@@ -1020,7 +996,7 @@ seRNA
 
 
 # add RNA gene expression matrix to the ArchR object
-filt_proj <- addGeneExpressionMatrix(input = filt_proj, seRNA = seRNA, force = TRUE)
+filt_proj <- addGeneExpressionMatrix(input = filt_proj, seRNA = rna_overlap, force = TRUE)
 
 
 # save the ArchR object with the added gene expression matrix
@@ -1032,7 +1008,25 @@ filt_proj <- addGeneExpressionMatrix(input = filt_proj, seRNA = seRNA, force = T
 We will add a second LSI for the RNA data. The one based on the ATAC data is called 
 "LSI_ATAC". We will call the one for the RNA data "LSI_RNA"
 
+
+
+```{r}
+plotEmbedding(
+  ArchRProj = filt_proj,
+  colorBy = "GeneExpressionMatrix",
+  name = markerGenes,
+  embedding = "UMAP"
+)
+```
+
+
+
+
 ```#{r}
+test <- ArchR::getMatrixFromProject(filt_proj, useMatrix = "GeneExpressionMatrix")
+
+colData(test) %>% as.data.frame %>% colnames() %>% tail(1) %>% print()
+
 filt_proj <- addIterativeLSI(
     ArchRProj = filt_proj, 
     clusterParams = list(
@@ -1048,6 +1042,7 @@ filt_proj <- addIterativeLSI(
     binarize = FALSE,
     name = "LSI_RNA"
 )
+ArchR::getCellColData(filt_proj) %>% as.data.frame()
 ```
 
 

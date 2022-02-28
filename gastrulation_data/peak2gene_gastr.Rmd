@@ -45,11 +45,11 @@ h5disableFileLocking()
 
 ```{r}
 # load ArchR project
-proj <- loadArchRProject(path = "03_added_gene_expression_ArchRobject/")
+proj <- loadArchRProject(path = "04_peak_calling_ArchRobject/")
 
 # for R to find macs2 we will use a conda environment where the latest version 
 # of macs2 is installed
-conda_list()[[1]][1] %>% use_condaenv(required = TRUE)
+#conda_list()[[1]][1] %>% use_condaenv(required = TRUE)
 ```
 
 
@@ -93,7 +93,7 @@ getCellColData(proj) %>% as.data.frame() %>%
 ```
 
 
-```{r}
+```#{r}
 proj <- addGroupCoverages(ArchRProj = proj, groupBy = "celltypes",
                           force = FALSE)
 ```
@@ -148,7 +148,7 @@ addArchRThreads(1)
 ```
 
 
-```{r}
+```#{r}
 proj <- addReproduciblePeakSet(
     ArchRProj = proj, 
     groupBy = "celltypes",
@@ -163,40 +163,40 @@ proj <- addReproduciblePeakSet(
 
 
 ```{r}
-peak_set <- ArchR::getPeakSet(proj) %>%
+peakset <- ArchR::getPeakSet(proj) %>%
   tibble::as_tibble()
-print(paste0("Dimensions of the peak set are: ", paste(dim(peak_set), collapse=", ")))
+print(paste0("Dimensions of the peak set are: ", paste(dim(peakset), collapse=", ")))
 ```
 
 
 
 ```{r}
-peak_set %>%
+peakset %>%
   glimpse()
 ```
 
 
 ```{r}
-peak_set %>%
+peakset %>%
   dplyr::count(peakType)
 ```
 
 ```{r}
-peak_set %>%
+peakset %>%
   ggplot() +
   geom_histogram(aes(x=groupScoreQuantile), bins=100, fill = "blue", 
                  color = "black", alpha = 0.6)
 ```
 
 ```{r}
-peak_set %>%
+peakset %>%
   ggplot() +
   geom_histogram(aes(x=score), bins=100, fill = "blue", 
                  color = "black", alpha = 0.6)
 ```
 
 ```{r}
-peak_set %>%
+peakset %>%
   ggplot() +
   geom_histogram(aes(x=Reproducibility), bins=3, fill = "blue", 
                  color = "black", alpha = 0.6)
@@ -204,75 +204,25 @@ peak_set %>%
 
 
 
-
- We will add the peak matrix to the ArchR object.
- 
-```{r}
-proj <- addPeakMatrix(ArchRProj = proj, 
-                      verbose = FALSE, 
-                      force = FALSE)
-```
- 
-```{r}
-#saveArchRProject(filt_proj, outputDirectory = "04_peak_calling_ArchRobject", load = FALSE)
-```
-
-What are our available matrices after this step?
+Lets have a look for which time stages there where enough cells to call peaks and 
+how many peaks were called in each case. 
 
 ```{r}
-getAvailableMatrices(proj)
-```
-```{r}
-peakMatrix <- getMatrixFromProject(ArchRProj = proj,
-                                   useMatrix = "PeakMatrix",
-                                   verbose = FALSE)
-
-
-print(paste0("Dimensions of the peak matrix are:", paste(dim(peakMatrix), collapse = ", "))
+peakset %>% group_by(GroupReplicate) %>% summarise(n = n())
 ```
 
 
 
-# Peak to Gene Linkage
 
-
-
-```{r}
-
-```
-
-
-
-We can retrieve this peak set as a `GRanges` object. Which will contain an annotation
-for the group from which each peak originated. This does not mean that the given 
-peak was only called in that group, but rather that the annotated group 
-had the highest normalized significanc for that peak call. 
-
-A **GRanges** object is a vector of genomic locations and associated annotations.
-
-* sequence name
-* interval
-* strand
-* optional metadata column
-
-
-```{r}
-getPeakSet(proj2)
-```
-
-```
-saveArchRProject(ArchRProj = proj2, outputDirectory = "Save_Vignette_object_2", load = FALSE)
-```
-
-
-```{r}
-peakset <- as_data_frame(getPeakSet(proj2))
+```{r, fig.width=15}
+peakset <- as_data_frame(peakset)
 
 p1 <- peakset %>% 
   mutate(Group = str_extract(peakset[["GroupReplicate"]], "(?<!.)[^.]+")) %>% 
   ggplot() +
   geom_bar(aes(x = Group, fill = peakType), position = "dodge") +
-  labs(title = "type of peak")
+  labs(title = "type of peak") +
+  theme(axis.text.x = element_text(angle = 45, vjust = 0.8, hjust=1)) 
 p1
 ```
 
@@ -325,206 +275,95 @@ p7 <- peakset %>%
   labs(title = "GC content")
 
 
-gridExtra::grid.arrange(p2, p3, p4, p5, p6, p7, ncol = 2)
+gridExtra::grid.arrange(p2, p3, p4, p5, p6, ncol = 2)
 ```
 
 
-```{r}
-proj3 <- addPeakMatrix(proj2)
+
+```{r, fig.height=8, fig.width=15}
+p7
+
 ```
 
 
-# Marker Peaks
-
+ We will add the peak matrix to the ArchR object.
+ 
+```[r]
+`proj <- addPeakMatrix(ArchRProj = proj, 
+                      verbose = FALSE, 
+                      force = FALSE)
+```
+ 
 ```{r}
-table(proj3$Clusters2)
+#saveArchRProject(proj, outputDirectory = "04_peak_calling_ArchRobject", load = FALSE)
 ```
 
-We want to account for differences in data quality amongst the cell groups
-by setting the `bias` parameter to account for TSS enrichment and the number 
-of unique fragments per cell. The function uses a pairwise wilcoxon test to compare
-different groups among each other. The output will be a Summarized Experiment 
-containing a few assays.
+What are our available matrices after this step?
 
 ```{r}
-markersPeaks <- getMarkerFeatures(
-    ArchRProj = proj3, 
-    useMatrix = "PeakMatrix", 
-    groupBy = "Clusters2",
-    bias = c("TSSEnrichment", "log10(nFrags)"),
-    testMethod = "wilcoxon"
+getAvailableMatrices(proj)
+```
+```{r}
+peakMatrix <- getMatrixFromProject(ArchRProj = proj,
+                                   useMatrix = "PeakMatrix",
+                                   verbose = FALSE)
+
+
+print(paste0("Dimensions of the peak matrix are:", paste(dim(peakMatrix), collapse = ", ")))
+```
+
+
+
+# Peak to Gene Linkage
+
+# Getting peaks2gene links took less than 5 minutes.
+
+```#{r}
+proj <- addPeak2GeneLinks(  ArchRProj = proj,
+  reducedDims  = "atac_LSI_100000",
+  useMatrix = "GeneExpressionMatrix",
+  maxDist = 250000,
+  verbose = FALSE, 
+  )
+```
+
+
+Lets have a look at the peak2gene links:
+
+```{r}
+p2g <- getPeak2GeneLinks(
+  ArchRProj = proj,
+  corCutOff = -1,
+  resolution = 1,
+  FDRCutOff = 1e-04,
+  varCutOffATAC = .25,
+  varCutOffRNA = .25, 
+  returnLoops = FALSE
 )
 ```
 
-
-For each peak we get 7 different assays, namely log2FC,  mean, FDR, Pval MeanDiff, 
-AUC and MeanBGD. Lets have a closer look at these results.
-
-We have 141.025 called peaks and their corresponding seqnames, index and start
-and end.
-
-```{r, resutls = "asis"}
-markersPeaks
-
-assays(markersPeaks)[[1]] %>% head %>% 
-  knitr::kable(caption = "log2FC")
-
-assays(markersPeaks)[[3]] %>% head %>% 
-  knitr::kable(caption = "False Discovery Rate")
-
-assays(markersPeaks)[[2]] %>% head %>% 
-  knitr::kable(caption = "mean")
-
-assays(markersPeaks)[[4]] %>% head %>% 
-  knitr::kable(caption = "p-value")
-
-assays(markersPeaks)[[5]] %>% head %>% 
-  knitr::kable(caption = "MeanDiff")
-
-assays(markersPeaks)[[6]] %>% head %>% 
-  knitr::kable(caption = "AUC")
-
-assays(markersPeaks)[[7]] %>% head %>% 
-  knitr::kable(caption = "MeanBGD")
-
-```
-
-
-
-We can extract dataframes for each cell group. For example in the table below
-the marker peaks from B cells are shown. 
 
 ```{r, results = "asis"}
-markerList <- getMarkers(markersPeaks, cutOff = "FDR <= 0.01 & Log2FC >= 1")
-markerList 
-
-markerList$B %>% head %>% knitr::kable()
+# convert the output to a tibble
+p2g %>% as_tibble() %>% head() %>% knitr::kable()
 ```
 
-Instead of returning a list of dataframes, we can also return a `GRangesList` 
-object.
+```{r, fig.width=10}
+p1 <- p2g %>% as_tibble() %>% ggplot() +
+  geom_histogram(aes(x = Correlation), bins = 100, fill = "blue",
+                 color = "black", alpha = .6) 
 
-```{r}
-markerList <- getMarkers(markersPeaks, cutOff = "FDR <= 0.01 & Log2FC >= 1",
-                         returnGR = TRUE)
-markerList
+p2 <- p2g %>% as_tibble() %>% ggplot() +
+  geom_histogram(aes(x = Correlation), bins = 100, fill = "blue",
+                 color = "black", alpha = .6) +
+  scale_y_log10() +
+  labs(y = "log10(counts)")
 
-markerList$B
-```
-
-
-## Plotting Marker Peaks
-
-Why do I only get 12,774 markers, while in the Tutorial they get 40,034 markers.
-
-### Heatmap 
-
-```{r}
-ht <- markerHeatmap(
-  seMarker = markersPeaks,
-  cutOff = "FDR <= 0.01 & Log2FC >= 0.5",
-  transpose = TRUE
-)
-```
-
-```{r}
-draw (ht, heatmap_legend_side = "bot", annotation_legend_side = "bot")
+gridExtra::grid.arrange(p1, p2, ncol = 2)
 ```
 
 
-### MA Plot
-
-* for visual representation of genomic data
-* differences between measurements taken in two samples 
-* M = log ratio (difference between logs)
-$M = \log_{2}(R/G) = \log_{2}(R)-\log_{2}(G)$ with $R$ and $G$ being two different
-conditions. 
-* A = average log intensity
-$A = \frac{1}{2}\log_{2}(R)+\log_{2}(G)$
-* Peaks with similar accessibility values in both conditions will cluster around
-$M=0$. These indicate no significant differences between the conditions.
-* Points away from $M=0$ indicate significant differences. In our case a region
-is more accessible if the point is above and less accessible if the point is 
-below $M=0$. 
-* The plot does not show p-values, therefore, we cannot tell which differences 
-are statistically significant. For this we would have to use a volcano plot. 
-
-For example we can plot marker peaks (up/downregulated) in Erythroid cell type
-compared to the other cell types.
-
-```{r}
-ma <- plotMarkers(seMarker = markersPeaks, name = "Erythroid", 
-                 cutOff = "FDR <= 0.01 & Log2FC >= 1", plotAs = "MA") + 
-  labs(title = "Erythroid cells")
-ma
-```
-
-### Volcano Plot 
-
-```{r}
-vp = plotMarkers(seMarker = markersPeaks, name = "Erythroid",
-                 cutOff = "FDR <= 0.01 & Log2FC >= 1", plotAs = "Volcano")
-vp + labs(title = "Erythroid cells")
-```
-
-### Marker Peaks in Browser Tracks
-
-We can also overlay the peaks with the Browser Tracks. We pass the peak
-regions to the `features` parameter in `plotBrowserTrack()`. An additional 
-BED-style track will be added to the track plot. 
-
-For example we can plot the GATA1 gene via the `geneSymbol` parameter.
-
-```{r}
-p <- plotBrowserTrack(
-    ArchRProj = proj3, 
-    groupBy = "Clusters2", 
-    geneSymbol = c("GATA1"),
-    features =  getMarkers(markersPeaks, cutOff = "FDR <= 0.1 & Log2FC >= 1", returnGR = TRUE)["Erythroid"],
-    upstream = 50000,
-    downstream = 50000, 
-    title = "GATA1"
-)
 
 
-grid::grid.newpage()
-grid::grid.draw(p$GATA1)
-```
 
-## Pairwise testing between groups
 
-We can also perform differential test between two cell types.
-
-For example, we can test for differences between "Erythroid" and "Progenitor" 
-cell type. 
-
-```{r}
-markerTest <- getMarkerFeatures(
-  ArchRProj = proj3,
-  useMatrix = "PeakMatrix",
-  groupBy = "Clusters2",
-  testMethod = "wilcoxon",
-  bias = c("TSSEnrichment", "log10(nFrags)"),
-  useGroups = "Erythroid",
-  bgdGroups = "Progenitor"
-)
-```
-```{r}
-ma <- plotMarkers(seMarker = markerTest, # a summarized experiment obejct returned by the getMarkerFeatures() function
-                  name = "Erythroid",
-                  cutOff = "FDR <= 0.1 & abs(Log2FC) >= 1",
-                  plotAs = "MA")
-ma + labs(title = "Erythroid vs. Progenitor")
-```
-```{r}
-v <- plotMarkers(seMarker = markerTest,
-                 name = "Erythroid",
-                 cutOff = "FDR <= 0.1 & abs(Log2FC) >= 1",
-                 plotAs = "Volcano")
-v + labs(title = "Erythroid vs. Progenitor")
-```
-
-```
-
-saveArchRProject(ArchRProj = proj2, outputDirectory = "Save_Vignette_object_3", load = FALSE)
-```
