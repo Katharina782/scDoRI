@@ -1,0 +1,374 @@
+---
+title: "Gene Activity Score"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 5
+    code_folding: hide
+    toc_float: true
+    code_download: true
+    theme: cosmo
+    highlight: textmate
+---
+
+<style>
+body {
+text-align: justify}
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(cache = FALSE, autodep = TRUE, 
+                      collapse = TRUE, message = FALSE)
+knitr::opts_knit$set(root.dir = "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/")
+setwd("/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/")
+
+set.seed(1)
+```
+
+  
+```{r}
+## Load libraries
+
+
+library(ArchR)
+library(rhdf5)
+library(tidyverse)
+library(reticulate)
+library(zellkonverter)
+#library(caret)
+h5disableFileLocking()
+```
+
+
+```{r}
+# load ArchR project
+proj <- loadArchRProject(path = "04_peak_calling_ArchRobject/")
+```
+
+
+# Computing gene activity scores from Peak2Gene Links
+
+The following function is based on the function used in Cicero to compute gene
+activity scores from co-accessibility scores of sites linked to each gene k. For
+more information on how the calculation is implemented in Cicero see here:
+https://www.sciencedirect.com/science/article/pii/S1097276518305471?via%3Dihub#sec4
+
+## Try to implement the Cicero function
+
+We need a binary accessibility matrix A as an input. With $A_{ji}$ being the 
+accessibility (zero or one) of distal site $j$ in cell $i$ and $A_{pi}$ being
+the accessbilitly of the proximal site $p$ in cell $i$. 
+
+We loop over all rows with sites $j$ or $p$ linked to the TSS of gene k. For each 
+site $j$ in cell $i$ weight the accessibility 
+
+```{r}
+
+```
+
+
+## Implementation for toy problem
+
+The main idea is to adapt the function which is used to determine gene activity
+scores based on co-accessibility scores (based on scATAC-seq data only, no 
+scRNA-seq data). For our case we want it to work for peak2gene links.
+
+
+We do not differentiate between sites proximal to the gene's TSS or distal, but
+simply use all peaks which are correlated with our gene k. 
+
+If to compute the correlation between peaks and genes the values are already 
+normalized, it might not be necessary to normalize the values here. 
+
+```{r}
+p2g <- getPeak2GeneLinks(
+  ArchRProj = proj,
+  corCutOff = -1,
+  resolution = 1,
+  FDRCutOff = 1e-04,
+  varCutOffATAC = .25,
+  varCutOffRNA = .25, 
+  returnLoops = FALSE
+)
+
+p2g %>% head
+
+
+print(paste0("Number of peak2gene links found: ", dim(p2g)))
+print(paste0("Total number of peaks called in the dataset: ", length(metadata(p2g)$peakSet)))
+print(paste0("For each of the peaks we have metadata containing information on peakType, nearestGene, disttoGeneStart,etc..."))
+```
+
+```{r}
+# read in ATAC metadata created by ArchR
+seATAC <- readRDS("/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/03_added_gene_expression_ArchRobject/Peak2GeneLinks/seATAC-Group-KNN.rds")
+
+#read in RNA metadata created by ArchR
+RNA_meta <- readRDS("/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/03_added_gene_expression_ArchRobject/Peak2GeneLinks/seRNA-Group-KNN.rds")
+```
+
+
+First, we will create a sparse matrix for the peak2gene links:
+
+```{r}
+# the peak matrix contains idx numbers as rows -> we can link these to peak coordinates
+# and cellnames as columns
+peakset <- getMatrixFromProject(proj, useMatrix = "PeakMatrix", binarize = TRUE)
+gene_expression <- getMatrixFromProject(proj, useMatrix = "GeneExpressionMatrix")
+peak_mat <- assays(peakset)[[1]]
+rownames(peak_mat) <- rowData(peakset)$idx
+print(paste0("The peak matrix has dimensions: ", dim(peak_mat)[[1]], " peaks and ", dim(peak_mat)[[2]], "cells"))
+print(paste0("The gene expression matrix contains ", dim(gene_expression) [[1]], " genes"))
+
+
+# create column and row indices for the unique peak and rna indices
+p2g$ColIndex <- match(p2g$idxATAC, unique(p2g$idxATAC))
+p2g$RowIndex <- match(p2g$idxRNA, unique(p2g$idxRNA))
+
+# create a sparse matrix
+p2g_mat <- sparseMatrix(i = p2g$RowIndex, 
+                        j = p2g$ColIndex,
+                        x = p2g$Correlation,
+                        dims = c(length(unique(p2g$idxRNA)),
+                                 length(unique(p2g$idxATAC))),
+                        dimnames = list(unique(p2g$idxRNA), 
+                                        unique(p2g$idxATAC)))
+print(paste0("The sparse matrix of correlations has dimensions: ", dim(p2g_mat)[[1]], " genes and ", dim(p2g_mat)[[2]], " peaks."))
+
+```
+
+We can now multiply the peak to gene correlation matrix with the accessibility 
+matrix, thereby creating a sum of all correlation values between a gene and its 
+correlated peaks in a cell. 
+
+```{r}
+# we subset the accessibility matrix to contain only peaks which are also 
+# included in our p2g matrix
+peak_mat_subset <- peak_mat[as.integer(colnames(p2g_mat)), ]
+
+# Now we can compute a weighted sum of peak2gene correlatiosn for each
+# peak and gene
+corr_sum <- p2g_mat %*% peak_mat_subset
+```
+
+
+```{r}
+scores <- corr_sum
+normalization_df <- data.frame(cell = colnames(corr_sum),
+                               total_activity = colSums(scores),
+                               total_sites = colSums(peak_mat_subset))
+
+normalization_df %>% head
+
+normalization_df %>% ggplot(aes(x = total_sites, y = total_activity)) + geom_point()
+
+
+activity_model <- stats::lm(log(total_activity) ~ log(total_sites), 
+                            data = normalization_df)
+
+
+normalization_df$fitted_curve <- exp(as.vector(predict(activity_model, type = "response")))
+
+normalization_df %>% ggplot(aes(x = fitted_curve, y = total_sites)) + geom_point()
+```
+
+
+Lets get the size factors.
+
+```{r}
+# each cell is scaled by a factor corresponding to its library depth
+#size_factors <- log(normalization_df$fitted_curve) / mean(log(normalization_df$fitted_curve))
+size_factors <- log(sum(normalization_df$fitted_curve)) / log(normalization_df$fitted_curve)
+ggplot(as.data.frame(size_factors), aes(x = size_factors)) +
+  geom_histogram(bins = 100)
+
+size_factors_mat <- Matrix::Diagonal(x = 1/size_factors)
+row.names(size_factors_mat) <- normalization_df$cell
+size_factors_mat[1:5, 1:5]
+# adjust scores by size factors 
+new_scores <- Matrix::t(size_factors_mat %*% Matrix::t(scores))
+new_scores[1:5, 1:5]
+
+# this will set an upper bound to 1e9
+new_scores@x <- pmin(1e9, exp(new_scores@x) - 1)
+```
+Finally, because gene expression values in RNA-seq ar usually
+
+```{r}
+# scale with total activity scores again
+scale_factors <- Matrix::Diagonal(x = 1/Matrix::colSums(new_scores))
+
+new_scores <- Matrix::t(scale_factors %*% Matrix::t(new_scores))
+
+# Check whether the column sum is 1:
+colSums(new_scores)%>% head
+
+
+# plot the total sites vs total activities after correction
+corrected_df <- data.frame(cell = colnames(corr_sum),
+                               total_activity = colSums(new_scores),
+                               total_sites = colSums(peak_mat_subset))
+corrected_df %>% ggplot(aes(x = total_sites, y = total_activity)) + geom_point()
+
+
+```
+
+
+Lets have a look at the distribution of the gene expression values.
+
+```{r}
+gene_expr_mat <- assays(gene_expression)[[1]]
+
+gene_df <- data.frame(cell = colnames(gene_expression), total_expression = colSums(gene_expr_mat),
+                      )
+
+gene_df %>% ggplot(aes(x = total_expression)) + geom_histogram() #+ scale_y_log10()
+```
+
+
+```{r}
+normalization_df %>% ggplot(aes(x = total_activity, y = total_sites)) + geom_point()
+
+```
+
+
+Lets have a look at the correlation between the gene activity scores
+computed based on chromatin accessibility in regions within +/- 100kb of the
+gene TSS and the actual gene expression.
+
+```{r}
+archr_gene_scores <- getMatrixFromProject(proj, useMatrix = "GeneScoreMatrix")
+rownames(gene_expr_mat) <- rowData(gene_expression)$idx
+archr_gene_scores_mat <- assays(archr_gene_scores)[[1]]
+rownames(archr_gene_scores_mat) <- rowData(archr_gene_scores)$idx
+print(paste("The dimensions of the gene activity scores are: ",paste(dim(archr_gene_scores), collapse=", ")))
+print(paste("The dimensions of the gene activity scores are: ",paste(dim(gene_expression), collapse=", ")))
+
+#subset the gene activity scores
+archr_gene_scores_mat <- archr_gene_scores_mat[rownames(gene_expr_mat), ]
+print(paste("The dimensions of the gene activity scores are: ",paste(dim(archr_gene_scores_mat), collapse=", ")))
+print(paste("The dimensions of the gene activity scores are: ",paste(dim(gene_expression), collapse=", ")))
+
+# compute the average activity/expression value for each gene and correlate them
+correlations <- cor(rowSums(gene_expr_mat)/dim(gene_expr_mat)[[2]], rowSums(archr_gene_scores_mat)/dim(archr_gene_scores_mat)[[2]])
+corrplot::corrplot(correlations)
+```
+
+```{r}
+df <- data.frame(expr = gene_expr_mat[1,], activity = archr_gene_scores_mat[1,])
+df %>% ggplot(aes(x = expr, y = activity)) +
+  geom_point() +
+  geom_smooth(formula = y ~ x, method = "lm", size = 0.1) 
+
+
+test <- data.frame(expr = rowSums(gene_expr_mat)/dim(gene_expr_mat)[[2]], activity = rowSums(archr_gene_scores_mat)/dim(archr_gene_scores_mat)[[2]])
+test %>% ggplot(aes(x = expr, y = activity)) +
+  geom_point() +
+  geom_smooth(formula = y ~ x, method = "lm", size = 0.1) 
+  #ggpubr::stat_cor(aes(label = ..r.label..), method = "pearson", r.digits = 2)
+
+
+
+```
+
+
+```#{r}
+
+dist_prox_conn <- rbind(nonneg_cons, data.frame(Peak1 = unique(promoter_peak_table$peak),
+                              Peak2 = unique(promoter_peak_table$peak),
+                              coaccess = 0))
+
+dist_prox_conn$RowIndex <- match(dist_prox_conn$Peak1, unique(dist_prox_conn$Peak1))
+dist_prox_conn$ColIndex <- match(dist_prox_conn$Peak2, unique(dist_prox_conn$Peak2))
+
+# make a square matrix of connections from distal to proximal sites
+distal_connectivity_matrix <- sparseMatrix(i = dist_prox_conn$RowIndex, 
+                                           j = dist_prox_conn$ColIndex,
+                                           x = dist_prox_conn$coaccess,
+                                           dims = c(length(unique(dist_prox_conn$Peak1)), 
+                                                    length(unique(dist_prox_conn$Peak2))),
+                                          dimnames = list(unique(dist_prox_conn$Peak1),
+                                                          unique(dist_prox_conn$Peak2)))
+```
+
+
+
+```{r}
+test1 <- data.frame(a = c(2,3,4,5,6), b = c(2,3, 4,5, 3), c = c("a", "b","c","d", "e"))
+test1
+
+test2 <- data.frame(a = c(0, 2,0, 0,0, 0, 0), b = c(2, 0, 0, 0, 0, 0,0), c = c("a", "b","b1","c","d", "e", "f"))
+test2
+
+rbind(test1, test2)
+```
+
+
+What type of metadata do we have for the p2g links?
+
+```{r}
+metadata(p2g)
+```
+
+
+```{r}
+seATAC <- readRDS("/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/03_added_gene_expression_ArchRobject/Peak2GeneLinks/seATAC-Group-KNN.rds")
+
+seATAC
+```
+
+```{r}
+atac <- assays(seATAC)[[1]]
+raw_atac <- assays(seATAC)[[2]]
+
+atac[1:5,1:5]
+raw_atac[1:5, 1:5]
+```
+
+```{r}
+rownames(seATAC) %>% head
+```
+
+```{r}
+rowData(seATAC) %>% head
+
+```
+```{r}
+rowData(seATAC)[["GroupReplicate"]] %>% head
+```
+
+
+```{r}
+metadata(seATAC)$KNNList[[1]]#%>% head
+```
+
+
+Having a look at the metadata of the RNA-seq. Here we have 22273 genes, much less
+than we have peaks in the ATAC data
+
+```{r}
+RNA_meta <- readRDS("/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/03_added_gene_expression_ArchRobject/Peak2GeneLinks/seRNA-Group-KNN.rds")
+```
+
+```{r}
+RNA_meta
+```
+```{r}
+rowData(RNA_meta) %>% head
+```
+
+```{r}
+rna <- assays(RNA_meta)[[1]]
+raw_rna <- assays(RNA_meta)[[2]]
+
+rna[1:5, 1:5]
+raw_rna[1:5, 1:5]
+```
+
+
+Gene expression matrix stored in the ArchR project.
+```{r}
+gene_expression <- getMatrixFromProject(ArchRProj = proj, useMatrix = "GeneExpressionMatrix")
+assays(gene_expression)[[1]][1:5, 1:5]
+```
+
