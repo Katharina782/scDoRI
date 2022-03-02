@@ -1,0 +1,563 @@
+---
+title: "Processed scRNA-seq & scATAC-seq of mouse gastrulation"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 5
+    code_folding: hide
+    toc_float: true
+    code_download: true
+    theme: cosmo
+    highlight: textmate
+---
+
+
+<style>
+body {
+text-align: justify}
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(cache = FALSE, autodep = TRUE, 
+                      collapse = TRUE, message = FALSE)
+knitr::opts_knit$set(root.dir = "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/")
+setwd("/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/")
+
+set.seed(1)
+```
+
+
+
+```{r}
+#library(ArchR)
+library(knitr)
+library(tidyverse)
+library(Seurat)
+library(SeuratData)
+library(scater)
+library(zellkonverter)
+library(SingleCellExperiment)
+library(EnsDb.Mmusculus.v79)
+library(Signac)
+#library(SeuratDisk)
+#library(caret)
+#h5disableFileLocking()
+```
+
+# Mouse gastrulation days E7.5, E8.0, E8.5, E8.75
+
+We can read in the .h5ad file as a SummarizedCellExperiment
+
+```{r}
+rna_gastr_SE <- readH5AD("jupyter_notebooks/anndata_rna.h5ad")
+atac_gastr_SE <- readH5AD("jupyter_notebooks/anndata_atac_peak_matrix.h5ad")
+
+print(paste0("The RNA data has dimensions ", paste(dim(rna_gastr_SE), collapse = ", ")))
+print(paste0("The ATAC data has dimensions ", paste(dim(atac_gastr_SE), collapse = ", ")))
+```
+
+
+We can convert a Seurat object to a SummarizedCellExperiment
+
+```
+SCE <- as.SingleCellExperiment(gastr_seurat)
+```
+
+We can convert SummarizedCellExperiment to a Seurat object. The SummarizedExperiment
+contains the raw counts of the gene expression. Additionally we can add the
+metadata information to the Seurat objects.
+
+```{r, results = "asis"}
+rna_seurat <- as.Seurat(rna_gastr_SE, counts = "X", data = "X")
+atac_seurat <- as.Seurat(atac_gastr_SE, counts = "X", data = "X")
+
+# Lets add the metadata to the Seurat object
+rna_seurat <- AddMetaData(rna_seurat, as.data.frame(colData(rna_gastr_SE)))
+atac_seurat <- AddMetaData(atac_seurat, as.data.frame(colData(atac_gastr_SE)))
+rna_seurat <- AddMetaData(rna_seurat, atac_seurat@meta.data %>% dplyr::select(BlacklistRatio:FRIP))
+
+
+rna_seurat@meta.data %>% head %>% knitr::kable()
+atac_seurat@meta.data %>% head %>% knitr::kable()
+```
+
+
+
+
+# QC
+
+
+### Empty Droplets
+
+```{r}
+
+tibble(sample = rna_seurat@meta.data$sample, umi_per_cell = Matrix::colSums(rna_seurat@assays$originalexp @counts)) %>% 
+  arrange(sample, desc(umi_per_cell)) %>% 
+  group_by(sample) %>% 
+  mutate(idx = seq_along(sample)) %>% 
+  mutate(cum_umi_per_cell = cumsum(umi_per_cell)) %>% 
+  ggplot() +
+  geom_line(aes(x = idx, y = cum_umi_per_cell)) +
+  facet_wrap(~sample, scales = "fixed") +
+  scale_y_log10() + scale_x_log10() +
+  ylab("cumulative UMI count") +
+  xlab("index")
+
+
+```
+
+
+
+From the plots below it seems that all cells with percentage of mitochondrial 
+genes above 50% were removed.
+
+
+```{r}
+#rename metadata
+
+variables <- c("nFeature_originalexp", "nCount_originalexp", "mitochondrial_percent_RNA", "ribosomal_percent_RNA")
+map(variables, function(n){
+  df <- rna_seurat@meta.data
+  ggplot(df) +
+    geom_boxplot(aes(x = df %>% pull("sample"), y = df %>% pull(n),
+                     fill = df %>% pull("sample")), alpha = .1) +
+    geom_violin(aes(x = df %>% pull("sample"), y = df %>% pull(n),
+                     fill = df %>% pull("sample")), alpha = .5) +
+    xlab("sample") +
+    ylab(paste0(n)) +
+    labs(title = paste0(n)) +
+    guides(fill=guide_legend(title="sample"))
+})
+
+```
+
+## How good are the annotations?
+
+There are two different methods for mapping listed in the metadata:
+
+* Seurat
+* MNN
+
+```{r}
+atac_seurat@meta.data %>% group_by(celltype.mapped_seurat) %>% 
+  summarise(n = n()) %>% knitr::kable(caption = "Number of celltypes using Seurat")
+
+atac_seurat@meta.data %>% group_by(celltype.mapped_mnn) %>% 
+  summarise(n = n()) %>% knitr::kable(caption = "Number of celltypes using MNN")
+```
+
+
+
+The annotations are similar across the different samples. However, there are
+some differences in the confidence with which cells can me mapped for different
+celltypes. For example, cardiomyocytes, erythroids and extraembryonic ectoderm
+and endoderm (but not mesoderm), mesenchyme and parietal endoderm can be mapped
+with very high confidence. 
+
+```{r, fig.height=8, fig.width=8}
+atac_seurat@meta.data %>% 
+  ggplot() + 
+  geom_boxplot(aes(x = celltype.mapped_seurat, y =  celltype.score_seurat, fill = celltype.mapped_seurat)) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.8, hjust=1)) + NoLegend()
+
+
+atac_seurat@meta.data %>% 
+  ggplot() + 
+  geom_boxplot(aes(x = celltype.mapped_mnn, y =  celltype.score_mnn, fill = celltype.mapped_mnn)) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.8, hjust=1)) + NoLegend()
+```
+
+
+## Normalize & Scale
+
+```{r}
+rna_seurat <- rna_seurat %>% 
+  NormalizeData(verbose = FALSE) %>% 
+  ScaleData(verbose = FALSE) %>%
+  FindVariableFeatures(verbose = FALSE)
+
+
+#gastr_seurat@assays$RNA@data[0:10, 0:10]
+```
+
+
+### PCA
+
+I will proceed with 15 PCs.
+
+```{r}
+rna_seurat <- RunPCA(rna_seurat, features = VariableFeatures(rna_seurat),
+             verbose = FALSE)
+
+ElbowPlot(rna_seurat)
+```
+
+```{r}
+pca_plots <- comprehenr::to_list(for (i in 1:15)
+  DimPlot(rna_seurat, reduction = "pca", dims = i:(i+1)) +
+    theme())
+
+#pca_plots
+#gridExtra::grid.arrange(unlist(pca_plots), ncol = 3, nrow = 5)
+
+```
+
+## Clustering
+
+```{r}
+rna_seurat <- FindNeighbors(rna_seurat, verbose = FALSE)
+rna_seurat <- FindClusters(rna_seurat, verbose = FALSE, resolution = 0.9)
+rna_seurat <- RunUMAP(rna_seurat, verbose = FALSE, dims = 1:15)
+```
+
+
+# Visualization
+
+```{r}
+colPalette_celltypes = c('#532C8A',
+ '#c19f70',
+ '#f9decf',
+ '#c9a997',
+ '#B51D8D',
+ '#3F84AA',
+ '#9e6762',
+ '#354E23',
+ '#F397C0',
+ '#ff891c',
+ '#635547',
+ '#C72228',
+ '#f79083',
+ '#EF4E22',
+ '#989898',
+ '#7F6874',
+ '#8870ad',
+ '#647a4f',
+ '#EF5A9D',
+ '#FBBE92',
+ '#139992',
+ '#cc7818',
+ '#DFCDE4',
+ '#8EC792',
+ '#C594BF',
+ '#C3C388',
+ '#0F4A9C',
+ '#FACB12',
+ '#8DB5CE',
+ '#1A1A1A',
+ '#C9EBFB',
+ '#DABE99',
+ '#65A83E',
+ '#005579',
+ '#CDE088',
+ '#f7f79e',
+ '#F6BFCB')
+```
+
+
+There are two possibilities to proceed with celltype annotations:
+
+* Seurat
+* MNN
+
+```{r}
+celltypes <- (atac_seurat@meta.data %>% group_by(celltype.mapped_seurat) %>% 
+  summarise(n = n()))$celltype.mapped_seurat
+
+col <- setNames(colPalette_celltypes, celltypes)
+```
+
+
+```{r, fig.width=15, fig.height = 10}
+DimPlot(rna_seurat, reduction = "umap", pt.size = 1, 
+        group.by = "celltype.mapped_seurat", label = TRUE, repel = TRUE, cols = col) +
+  NoLegend()
+```
+
+
+```{r, fig.width=15, fig.height = 10}
+DimPlot(rna_seurat, reduction = "umap", pt.size = 1, 
+        group.by = "celltype.mapped_seurat", cols = col) #, label = TRUE, repel = TRUE) +
+```
+
+```{r}
+DimPlot(rna_seurat, reduction = "umap", pt.size = .1, 
+        group.by = "seurat_clusters", label = TRUE) +
+  NoLegend()
+```
+
+```{r, fig.width=15, fig.height=10}
+p1 <- DimPlot(rna_seurat, reduction = "umap", pt.size = .1, group.by = "sample")
+
+p2 <- FeaturePlot(rna_seurat, reduction = "umap", pt.size = .1,
+            features = "nCount_RNA") +
+    scale_color_viridis_c() 
+p3 <- FeaturePlot(rna_seurat, reduction = "umap", pt.size = .1, features = "mitochondrial_percent_RNA") +
+    scale_color_viridis_c() 
+
+p4 <- FeaturePlot(rna_seurat, reduction = "umap", pt.size = .1, features = "nFeature_RNA") +
+    scale_color_viridis_c() 
+
+gridExtra::grid.arrange(p1, p2, p3, p4, ncol = 2, nrow = 2)
+```
+
+
+```{r, fig.width=15, fig.height=20}
+DimPlot(rna_seurat, reduction = "umap", pt.size = 1, 
+        group.by = "celltype.mapped_seurat", split.by = "orig.ident", ncol = 1, cols = col) +
+  labs(title = "Celltypes at different time points")
+```
+
+
+
+```#{r, fig.width = 12, fig.height=8}
+rna_seurat@meta.data %>%
+  group_by(orig.ident, celltype.mapped) %>% 
+  summarise(Total = n()) %>% 
+  mutate(freq = Total/sum(Total)) %>% 
+  ggplot(aes(x = celltype.mapped, y = freq, fill = orig.ident)) +
+  geom_bar(position = "dodge", stat = "identity") +
+  theme(axis.text.x = element_text(angle = 45, vjust = 0.8, hjust=1)) +
+  facet_wrap(~orig.ident, ncol = 1)
+```
+
+We can see that nascent mesoderm, epiblast and primitive streak are only present 
+at E75. Also, extraembryonice endoderm and ectoderm are highest and decrease 
+with progressing gastrulation. Forebrain/Midbrain/Hindbrain, neural crest and 
+neuromesodermal progenitor (NMP) cells are not present at 
+E7.5, but emerge at E8.0 and are present at even higher percentage at E8.5. The 
+same is true for Allantois, erythroids (produce red blood cells, remain in bone
+marrow)and cardiomyocytes.
+
+(Pijuan_Sala et.al, A single-cell molecular map of mouse
+gastrulation and early organogenesis, 2019, Nature)
+
+```{r, fig.width=10}
+# plot the frequency of each cell type at each embryonic stage
+# all frequencies for one embryonic stage would add up to 0
+rna_seurat@meta.data %>%
+  group_by(orig.ident, celltype.mapped_seurat) %>% 
+  summarise(Total = n()) %>% 
+  mutate(freq = Total/sum(Total)) %>% 
+  ggplot(aes(x = celltype.mapped_seurat, y = freq, fill = orig.ident)) +
+  geom_bar(position = "dodge", stat = "identity") +
+  theme(axis.text.x = element_text(angle = 45, vjust = 0.8, hjust=1)) 
+  
+```
+
+
+
+```{r}
+subset(rna_seurat, subset = orig.ident == "E7.5")
+```
+
+### Processing Data at each time step separately
+
+```{r}
+stages <- c("E7.5", "E8.0", "E8.5", "E8.75")
+seurat_objects <- map(stages, function(n){
+  rna_seurat <- subset(rna_seurat, subset = orig.ident == n)
+  rna_seurat <- rna_seurat  %>% 
+    NormalizeData(verbose = FALSE) %>% 
+    ScaleData(verbose = FALSE) %>%
+    FindVariableFeatures(verbose = FALSE) 
+  rna_seurat <- rna_seurat %>%  RunPCA(features = VariableFeatures(rna_seurat), verbose = FALSE) %>% 
+    FindNeighbors(verbose = FALSE) %>% 
+    FindClusters(verbose = FALSE, resolution = .9) %>% 
+    RunUMAP(verbose = TRUE, dims = 1:15)
+  list(name = n, object = rna_seurat)
+    
+})
+
+
+e75 <- seurat_objects[[1]]$object
+e80 <- seurat_objects[[2]]$object
+e85 <- seurat_objects[[3]]$object
+e785 <- seurat_objects[[4]]$object
+```
+
+
+```#{r}
+umaps <- comprehenr::to_list(for (i in 1:4)
+  DimPlot(rna_seurat, reduction = "pca", dims = i:(i+1)) +
+    theme()) 
+```
+
+
+```{r, fig.width=15, fig.height=20}
+plots <- map(seq.int(1,4), function(n){
+  object <- seurat_objects[[n]]$object
+  p1 <- DimPlot(object, reduction = "umap", group.by = "celltype.mapped_seurat", 
+                cols = col, size = .9) +
+    labs(title = paste0(seurat_objects[[n]]$name, " celltypes"))
+  list(plot = p1)
+})
+
+gridExtra::grid.arrange(plots[[1]]$p, plots[[2]]$p, plots[[3]]$p,plots[[4]]$p, ncol = 1)
+```
+
+
+
+# scATAC-seq data
+
+
+
+```
+# genome annotations from EnsDb
+annotations <- GetGRangesFromEnsDb(ensdb = EnsDb.Mmusculus.v79)
+
+# change to UCSC style 
+seqlevelsStyle(annotations) <- "UCSC"
+
+# add gene information to the seurat object
+Annotation(atac_seurat) <- annotations
+```
+
+
+# QC ATAC
+
+```{r}
+atac_seurat@meta.data %>%
+  ggplot() +
+  geom_density2d_filled(aes(x=log10(nFrags_atac ), y=TSSEnrichment_atac), bins=20) +
+  geom_hline(yintercept = 5, color="green", linetype="dashed") +
+  geom_vline(xintercept = 3, color="green", linetype="dashed") +
+  #geom_xsidedensity(aes(x=log10(pre_filter_meta$nFrags))) +
+  #geom_ysidedensity(aes(y = pre_filter_meta$TSSEnrichment)) +
+  facet_wrap(~sample) +
+  theme(legend.position = "none") +
+  labs(x = "Log10 Unique Fragments", y = "TSS Enrichment Score")
+```
+
+
+
+```{r, fig.width=10}
+p1 <- atac_seurat@meta.data %>% 
+  ggplot() +
+  ggridges::geom_density_ridges(aes(x = TSSEnrichment, y = Sample, fill = Sample),
+                                alpha = .6)
+
+p2 <- atac_seurat@meta.data %>% 
+  ggplot() +
+  geom_violin(aes(x = Sample, y = TSSEnrichment, fill = Sample), alpha = 0.6) +
+  geom_boxplot(aes(x = Sample, y = TSSEnrichment,fill = Sample), alpha = 0.1) + 
+  theme(legend.position = "none") +
+  labs(title = "TSS Enrichment")
+cowplot::plot_grid(p2, p1, ncol = 2)
+
+```
+
+```{r, fig.width=10}
+p1 <- atac_seurat@meta.data %>% 
+  ggplot() +
+  ggridges::geom_density_ridges(aes(x = nFrags_atac , y = Sample, fill = Sample),
+                                alpha = .6)
+
+p2 <- atac_seurat@meta.data %>% 
+  ggplot() +
+  geom_violin(aes(x = Sample, y = nFrags_atac , fill = Sample), alpha = 0.6) +
+  geom_boxplot(aes(x = Sample, y = nFrags_atac ,fill = Sample), alpha = 0.1) + 
+  theme(legend.position = "none") +
+  labs(title = "TSS Enrichment")
+cowplot::plot_grid(p2, p1, ncol = 2)
+```
+
+# Normalization & Dimensionality reduction ATAC
+
+**Latent Semantic Indexing**
+
+* TF-IDF normalization
+  + normalizes across cells (sequencing depth)
+  + across peak (higher values to more rare peaks)
+* Select Top features
+* Run SVD on selected features
+
+```{r}
+atac_seurat <- RunTFIDF(atac_seurat)
+atac_seurat <- FindTopFeatures(atac_seurat)
+atac_seurat <- RunSVD(atac_seurat)
+```
+The first LSI component often captures sequencing depth. We will
+therefore remove it from downstream analysis. The correlation between sequencing
+depth and each LSI component is shown in the plot below.
+
+```{r}
+DepthCor(atac_seurat)
+```
+
+# Visualization
+
+```{r}
+atac_seurat <- RunUMAP(atac_seurat, reduction = "lsi", dims = 2:30)
+aatac_seurat <- FindNeighbors(atac_seurat, reduction = "lsi", dims = 2:30)
+
+# for Clsutering instead of Louvian SLM algorithm is used
+#atac_seurat <- FindClusters(atac_seurat, verbose = FALSE, algorithm = 3) 
+```
+
+
+
+```{r, fig.width = 15, fig.height=10}
+
+DimPlot(atac_seurat, group.by = "celltype.mapped_seurat", reduction = "umap", pt.size = 1, cols = col)# +
+  labs(title = "scATAC-seq Celltype")
+  
+DimPlot(atac_seurat, group.by = "sample", reduction = "umap", pt.size = 1, cols = col)# +
+  labs(title = "scATAC-seq Celltype")
+```
+
+```{r, fig.width=15, fig.height=10}
+DimPlot(rna_seurat , group.by = "celltype.mapped_seurat", pt.size = 1, cols = col,
+        reduction = "umap") +
+  labs(title = "scRNA-seq Celltype")
+
+```
+
+
+
+
+
+```{r, fig.width=10, fig.height=8}
+atac_seurat@meta.data %>% 
+  ggplot(aes(x = log10(nCount_originalexp ), y = log10(nFrags_atac))) +
+  geom_point(alpha = .2, size = .2) +
+  ggside::geom_xsidedensity() +
+  ggside::geom_ysidedensity() +
+  facet_wrap(~sample) +
+  labs(x = "Log10 Counts", y = "log10 Unique Fragments")
+```
+
+
+```{r, fig.width=10, fig.height=10}
+atac_seurat@meta.data %>% 
+  ggplot(aes(x = log10(nCount_originalexp), y = log10(TSSEnrichment))) +
+  geom_point(size = .2, alpha = .2) +
+  ggside::geom_xsidedensity() +
+  ggside::geom_ysidedensity() +
+  facet_wrap(~sample)
+```
+
+
+```{r}
+atac_seurat@meta.data %>% 
+  ggplot() +
+  geom_histogram(aes(x = PromoterRatio_atac)) 
+
+atac_seurat@meta.data %>% 
+  ggplot() +
+  geom_histogram(aes(x = NucleosomeRatio_atac)) 
+```
+
+
+
+
+# Integrating RNA & ATAC
+
+We will remove all cells from the scRNA-seq dataset which do not pass the 
+scATAC-seq QC and vice versa.
+
+```{r}
+#rna_seurat_filt <- subset(gastr_seurat, pass_atacQC == "True")
+# atac_seurat_filt <- subset(atac_seurat, pass_rnaQC == TRUE)
+
+```
+
