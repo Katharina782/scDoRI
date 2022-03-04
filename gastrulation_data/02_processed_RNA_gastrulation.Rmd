@@ -29,7 +29,7 @@ set.seed(1)
 
 
 ```{r}
-#library(ArchR)
+suppressPackageStartupMessages({
 library(knitr)
 library(tidyverse)
 library(Seurat)
@@ -39,12 +39,13 @@ library(zellkonverter)
 library(SingleCellExperiment)
 library(EnsDb.Mmusculus.v79)
 library(Signac)
-#library(SeuratDisk)
-#library(caret)
-#h5disableFileLocking()
+})
 ```
 
 # Mouse gastrulation days E7.5, E8.0, E8.5, E8.75
+
+The dataset consists of multiome data (scATAC-seq & scRNA-seq) from cells at the 
+four mentioned timepoints.
 
 We can read in the .h5ad file as a SummarizedCellExperiment
 
@@ -56,12 +57,6 @@ print(paste0("The RNA data has dimensions ", paste(dim(rna_gastr_SE), collapse =
 print(paste0("The ATAC data has dimensions ", paste(dim(atac_gastr_SE), collapse = ", ")))
 ```
 
-
-We can convert a Seurat object to a SummarizedCellExperiment
-
-```
-SCE <- as.SingleCellExperiment(gastr_seurat)
-```
 
 We can convert SummarizedCellExperiment to a Seurat object. The SummarizedExperiment
 contains the raw counts of the gene expression. Additionally we can add the
@@ -82,9 +77,9 @@ atac_seurat@meta.data %>% head %>% knitr::kable()
 ```
 
 
+# scRNA-seq
 
-
-# QC
+## QC
 
 
 ### Empty Droplets
@@ -109,14 +104,19 @@ tibble(sample = rna_seurat@meta.data$sample, umi_per_cell = Matrix::colSums(rna_
 
 
 From the plots below it seems that all cells with percentage of mitochondrial 
-genes above 50% were removed.
+genes above 40% were removed. The early time points E7.5rep1/2 have the highest
+percentage of mitochondrial genes. Especially E7.5 rep2 seems to have a higher 
+percentage of mitochondrial genes. Conversely, the same replicates from E7.5 
+have a lower number of features and counts. This means that the E7.5 rep2 and to
+a lesser extent E7.5 rep1 are of lower quality compared to the other samples. E8.75 
+rep1/rep2 seem to have the highest quality. 
 
 
-```{r}
+```{r, fig.width=15, 10}
 #rename metadata
 
 variables <- c("nFeature_originalexp", "nCount_originalexp", "mitochondrial_percent_RNA", "ribosomal_percent_RNA")
-map(variables, function(n){
+plots <- map(variables, function(n){
   df <- rna_seurat@meta.data
   ggplot(df) +
     geom_boxplot(aes(x = df %>% pull("sample"), y = df %>% pull(n),
@@ -128,6 +128,8 @@ map(variables, function(n){
     labs(title = paste0(n)) +
     guides(fill=guide_legend(title="sample"))
 })
+
+gridExtra::grid.arrange(grobs = plots, ncol = 2)
 
 ```
 
@@ -204,14 +206,17 @@ pca_plots <- comprehenr::to_list(for (i in 1:15)
 
 ## Clustering
 
+Trying a different resolution for the clustering to see if the Mesenchyme will 
+still separate.
+
 ```{r}
 rna_seurat <- FindNeighbors(rna_seurat, verbose = FALSE)
-rna_seurat <- FindClusters(rna_seurat, verbose = FALSE, resolution = 0.9)
+rna_seurat <- FindClusters(rna_seurat, verbose = FALSE, resolution = 0.6)
 rna_seurat <- RunUMAP(rna_seurat, verbose = FALSE, dims = 1:15)
 ```
 
 
-# Visualization
+## Visualization
 
 ```{r}
 colPalette_celltypes = c('#532C8A',
@@ -256,8 +261,21 @@ colPalette_celltypes = c('#532C8A',
 
 There are two possibilities to proceed with celltype annotations:
 
-* Seurat
+* Seurat (this is the one I used)
 * MNN
+
+In the plot below you can see that the Mesenchyme separates into two clusters, 
+even though the cells belong to the same celltype. Therefore I visualized the 
+Mesenchyme cells according to their respective time point and replicate below. It 
+becomes evident that the Mesenchyme separate into E7.5 and E8.0, E8.5, E8.75. Therefore,
+the separation is probably a biological effect corresponding to different signatures 
+at different time points. However, we should keep in mind that E7.5 was also the
+time point with lowest quality of cells. 
+
+There is one cluster which contains a very heterogeneous population of cells,
+namely mixed & nascent mesoderm, caudal & rostral neuroectoderm, primitive streak, 
+caudal epiblast and epiblast. As we will see later on, these are primarily early celltypes
+found at E7.5, which are not present at later timepoints anymore.
 
 ```{r}
 celltypes <- (atac_seurat@meta.data %>% group_by(celltype.mapped_seurat) %>% 
@@ -273,17 +291,32 @@ DimPlot(rna_seurat, reduction = "umap", pt.size = 1,
   NoLegend()
 ```
 
+```{r}
+DimPlot(subset(rna_seurat, celltype.mapped_seurat == "Mesenchyme"), 
+        group.by = "sample")
+DimPlot(subset(rna_seurat, celltype.mapped_seurat == "Mesenchyme"), 
+        split.by  = "sample")
+```
+
+Plot with color legend.
 
 ```{r, fig.width=15, fig.height = 10}
 DimPlot(rna_seurat, reduction = "umap", pt.size = 1, 
         group.by = "celltype.mapped_seurat", cols = col) #, label = TRUE, repel = TRUE) +
 ```
 
+Clustering by Seurat with resolution = 0.6 yields 17 distinct clusters, not enough
+to differentiate the large number of different celltypes in this dataset.
+
 ```{r}
 DimPlot(rna_seurat, reduction = "umap", pt.size = .1, 
         group.by = "seurat_clusters", label = TRUE) +
   NoLegend()
 ```
+
+Below, you can see how the earlier time points separate from the later time 
+points. The number of counts is very homogenous, while the mitochondrial RNA 
+percentage is higher and the number of features lower for E7.5 as already pointed out.
 
 ```{r, fig.width=15, fig.height=10}
 p1 <- DimPlot(rna_seurat, reduction = "umap", pt.size = .1, group.by = "sample")
@@ -301,6 +334,18 @@ gridExtra::grid.arrange(p1, p2, p3, p4, ncol = 2, nrow = 2)
 ```
 
 
+## Distribution of celltypes at different time points
+
+
+Visualizing the cells at each timepoint in separate UMAPs shows how the
+distribution of celltypes changes as gastrulation proceeds. The heterogenous 
+cell cluster present at E7.5 disappears at later time points. We can also see how
+no Erythroids are present at E7.5,
+Erythroid1 (and to lesser extend Erythroid2 and 3) appear at E8.0, while Eryhtroid3 
+are found to a higher extent
+at E8.75, which indicates that these cells correspond to different developmental 
+stages. 
+
 ```{r, fig.width=15, fig.height=20}
 DimPlot(rna_seurat, reduction = "umap", pt.size = 1, 
         group.by = "celltype.mapped_seurat", split.by = "orig.ident", ncol = 1, cols = col) +
@@ -308,25 +353,16 @@ DimPlot(rna_seurat, reduction = "umap", pt.size = 1,
 ```
 
 
-
-```#{r, fig.width = 12, fig.height=8}
-rna_seurat@meta.data %>%
-  group_by(orig.ident, celltype.mapped) %>% 
-  summarise(Total = n()) %>% 
-  mutate(freq = Total/sum(Total)) %>% 
-  ggplot(aes(x = celltype.mapped, y = freq, fill = orig.ident)) +
-  geom_bar(position = "dodge", stat = "identity") +
-  theme(axis.text.x = element_text(angle = 45, vjust = 0.8, hjust=1)) +
-  facet_wrap(~orig.ident, ncol = 1)
-```
-
 We can see that nascent mesoderm, epiblast and primitive streak are only present 
 at E75. Also, extraembryonice endoderm and ectoderm are highest and decrease 
 with progressing gastrulation. Forebrain/Midbrain/Hindbrain, neural crest and 
 neuromesodermal progenitor (NMP) cells are not present at 
-E7.5, but emerge at E8.0 and are present at even higher percentage at E8.5. The 
+E7.5, but emerge at E8.0 and are present at even higher percentage at E8.5. Also,
+the endothelium appears only at E8.0. The 
 same is true for Allantois, erythroids (produce red blood cells, remain in bone
-marrow)and cardiomyocytes.
+marrow)and cardiomyocytes.  Conversely, the number
+of extraembryonic ectoderm cells and extraembryonic endoderm cells become less 
+at each time step. 
 
 (Pijuan_Sala et.al, A single-cell molecular map of mouse
 gastrulation and early organogenesis, 2019, Nature)
@@ -345,12 +381,12 @@ rna_seurat@meta.data %>%
 ```
 
 
+## Processing Data at each time step separately
 
-```{r}
-subset(rna_seurat, subset = orig.ident == "E7.5")
-```
-
-### Processing Data at each time step separately
+When doing the preprocessing steps and dimensionality reduction for each 
+time point separately, we can create more clearly separated clusters for the
+later time points, however, for E7.5 the mixed cluster of epiblast, mixed & nascent
+mesoderm, primitive streak and PGC remains a heterogeneous cluster. 
 
 ```{r}
 stages <- c("E7.5", "E8.0", "E8.5", "E8.75")
@@ -376,12 +412,6 @@ e785 <- seurat_objects[[4]]$object
 ```
 
 
-```#{r}
-umaps <- comprehenr::to_list(for (i in 1:4)
-  DimPlot(rna_seurat, reduction = "pca", dims = i:(i+1)) +
-    theme()) 
-```
-
 
 ```{r, fig.width=15, fig.height=20}
 plots <- map(seq.int(1,4), function(n){
@@ -400,20 +430,7 @@ gridExtra::grid.arrange(plots[[1]]$p, plots[[2]]$p, plots[[3]]$p,plots[[4]]$p, n
 # scATAC-seq data
 
 
-
-```
-# genome annotations from EnsDb
-annotations <- GetGRangesFromEnsDb(ensdb = EnsDb.Mmusculus.v79)
-
-# change to UCSC style 
-seqlevelsStyle(annotations) <- "UCSC"
-
-# add gene information to the seurat object
-Annotation(atac_seurat) <- annotations
-```
-
-
-# QC ATAC
+## QC ATAC
 
 ```{r}
 atac_seurat@meta.data %>%
@@ -428,7 +445,9 @@ atac_seurat@meta.data %>%
   labs(x = "Log10 Unique Fragments", y = "TSS Enrichment Score")
 ```
 
-
+The scATAC-seq shows that E7.5 seems to be of lower quality, which we have already
+observed in the scRNA-seq. Potentially, the cells where simply in a worse 
+condition when sequenced.
 
 ```{r, fig.width=10}
 p1 <- atac_seurat@meta.data %>% 
@@ -461,15 +480,15 @@ p2 <- atac_seurat@meta.data %>%
 cowplot::plot_grid(p2, p1, ncol = 2)
 ```
 
-# Normalization & Dimensionality reduction ATAC
+## Normalization & Dimensionality reduction ATAC
 
 **Latent Semantic Indexing**
 
-* TF-IDF normalization
-  + normalizes across cells (sequencing depth)
-  + across peak (higher values to more rare peaks)
-* Select Top features
-* Run SVD on selected features
+1. TF-IDF normalization
+  + normalize across cells (sequencing depth)
+  + normalize across peak (higher values to more rare peaks)
+2. Select Top features
+3.  Run SVD on selected features
 
 ```{r}
 atac_seurat <- RunTFIDF(atac_seurat)
@@ -484,11 +503,11 @@ depth and each LSI component is shown in the plot below.
 DepthCor(atac_seurat)
 ```
 
-# Visualization
+## Visualization
 
 ```{r}
-atac_seurat <- RunUMAP(atac_seurat, reduction = "lsi", dims = 2:30)
-aatac_seurat <- FindNeighbors(atac_seurat, reduction = "lsi", dims = 2:30)
+atac_seurat <- RunUMAP(atac_seurat, reduction = "lsi", dims = 2:30, verbose = FALSE)
+aatac_seurat <- FindNeighbors(atac_seurat, reduction = "lsi", dims = 2:30, verbose = FALSE)
 
 # for Clsutering instead of Louvian SLM algorithm is used
 #atac_seurat <- FindClusters(atac_seurat, verbose = FALSE, algorithm = 3) 
@@ -498,10 +517,10 @@ aatac_seurat <- FindNeighbors(atac_seurat, reduction = "lsi", dims = 2:30)
 
 ```{r, fig.width = 15, fig.height=10}
 
-DimPlot(atac_seurat, group.by = "celltype.mapped_seurat", reduction = "umap", pt.size = 1, cols = col)# +
+DimPlot(atac_seurat, group.by = "celltype.mapped_seurat", reduction = "umap", pt.size = 1, cols = col) +
   labs(title = "scATAC-seq Celltype")
   
-DimPlot(atac_seurat, group.by = "sample", reduction = "umap", pt.size = 1, cols = col)# +
+DimPlot(atac_seurat, group.by = "sample", reduction = "umap", pt.size = 1, cols = col) +
   labs(title = "scATAC-seq Celltype")
 ```
 
@@ -513,7 +532,8 @@ DimPlot(rna_seurat , group.by = "celltype.mapped_seurat", pt.size = 1, cols = co
 ```
 
 
-
+Lets have a look at whether the number of fragments is correlated to the 
+number of counts in each celltype. This seems to be the case.
 
 
 ```{r, fig.width=10, fig.height=8}
@@ -549,15 +569,9 @@ atac_seurat@meta.data %>%
 
 
 
-
-# Integrating RNA & ATAC
-
-We will remove all cells from the scRNA-seq dataset which do not pass the 
-scATAC-seq QC and vice versa.
-
 ```{r}
-#rna_seurat_filt <- subset(gastr_seurat, pass_atacQC == "True")
-# atac_seurat_filt <- subset(atac_seurat, pass_rnaQC == TRUE)
-
+saveRDS(atac_seurat, "atac_Seurat_object")
+saveRDS(rna_seurat, "rna_Seurat_object")
 ```
+
 
