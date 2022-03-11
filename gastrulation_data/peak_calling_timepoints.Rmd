@@ -1,4 +1,6 @@
 ---
+title: "Peak calling on separate time points"
+---
 title: "Peak Calling & Peak2Gene Linkage"
 output: 
   html_document:
@@ -37,7 +39,6 @@ library(uwot)
 library(tidyverse)
 library(scater)
 library(reticulate)
-library(dichromat)
 library(zellkonverter)
 #library(caret)
 h5disableFileLocking()
@@ -55,7 +56,7 @@ proj <- loadArchRProject(path = "04_peak_calling_ArchRobject/")
 
 
 
-# Pseudo-bulk replicates
+# Pseudo-bulk replicates on different time points
 
 For statistical significance we need replicates, which is not given 
 in the binary single cell data obtained from scATAC-seq. Therefore,
@@ -66,6 +67,10 @@ pseudo-bulks are created, resulting in pseudo-bulk replicates. The main
 assumption here is that the cells we group together are so similar that
 we are not interested in the differences between them. We group cells
 together based on clusters and known cell identities. 
+
+In the case of the gastrulation dataset we have three distinct time points, namely
+E7.5, E8.0 and E8.5. For this reason, we might loose information if we call peaks 
+on 
 
 Parameters:
 
@@ -129,8 +134,7 @@ For example, if we hae 3 ell types A, B, C and 3 pseudo-bulk replicates for each
 bulk replicates from a single cell type. (It is important to normalize peak 
 significance across different samples beforehand)
 3. Check the reproducibility of each peak across pseud9-bulk replicates and only
-keep the peaks that pass a threshold (this threshold is indicated by the `reproducibility`
-parameter).
+keep the peaks that pass a threshold
 4. You now have a single merged peak set for each of the 3 cell types
 5. proceed with iterative overlap remove to merge A, B, C peak sets (It is 
 important to re-normalize the peak significance across different cell types at 
@@ -142,23 +146,7 @@ Cell are then defined as accessible at a particular peak if a read from that
 cell overlapped the peak. 
 
 We set the minimum number of cells used to call a peak to 25, this way
-we will exclude pseudo-bulk replicates with very low cell number.
-
-Here I set the reproducibility parameter to 2. Any peaks below that will be 
-removed. This means that at least two samples must have a peak call at this locus.
-A maximum of 500 peaks can be called per cell. A maximum of 150,000 peaks can be called
-per group. The cells are grouped by celltype prior to calling peaks. 
-
-The q-value cutoff for signficance testing during peak calling is 0.1. The q-value 
-gives the expected positive FDR obtained by rejecting the null hypothesis (proportion
-of false discoveries among all positive results. If we set a cutoff at 0.1, the 
-expected false discovery rate is 0.1.
-
-In our case peaks within 2000bp upstream and 100bp downstream of the TSS 
-are annotated as a promoter peak. 
-
-If you use `getGeneAnnotations()` you can get a list of gene annotations (including
-coordinates, gene-id and symbols/names) for exons, TSS and genes. 
+we will exclude pseudo-bulk replicates with very low cell number. 
 
 ```{r}
 addArchRThreads(1)
@@ -178,9 +166,6 @@ proj <- addReproduciblePeakSet(
 )
 ```
 
-
-we should probably try to filter peaks which get a low score and genes 
-with low variability. 
 
 
 ```{r}
@@ -202,8 +187,6 @@ peakset %>%
   dplyr::count(peakType)
 ```
 
-Not sure what these plots mean?
-
 ```{r}
 peakset %>%
   ggplot() +
@@ -211,37 +194,14 @@ peakset %>%
                  color = "black", alpha = 0.6)
 ```
 
-In our data the min score value is 1, while in Ricards data the min value is 3. We 
-could remove an cells with values lower than 3.
-
 ```{r}
 peakset %>%
   ggplot() +
   geom_histogram(aes(x=score), bins=100, fill = "blue", 
                  color = "black", alpha = 0.6)
-
-
-peakset %>%
-  ggplot() +
-  geom_histogram(aes(x=score), bins=100, fill = "blue", 
-                 color = "black", alpha = 0.6) +
-  scale_y_log10()
-
-peakset %>%
-  ggplot() +
-  geom_histogram(aes(x=score), bins=100, fill = "blue", 
-                 color = "black", alpha = 0.6) +
-  scale_x_log10()
-
-min(peakset$score)
 ```
 
-
-The cutoff for the reproducibility was set to 2, meaning that if a peak 
-was not found in more than two pseudo-bulk replicates it was removed.
-
 ```{r}
-
 peakset %>%
   ggplot() +
   geom_histogram(aes(x=Reproducibility), bins=3, fill = "blue", 
@@ -258,7 +218,7 @@ peakset %>% group_by(GroupReplicate) %>% summarise(n = n())
 ```
 
 
-TODO: normalize this plot
+
 
 ```{r, fig.width=15}
 peakset <- as_data_frame(peakset)
@@ -322,15 +282,8 @@ p7 <- peakset %>%
 
 
 gridExtra::grid.arrange(p2, p3, p4, p5, p6, ncol = 2)
-```
-
-
-
-```{r, fig.height=8, fig.width=15}
 p7
-
 ```
-
 
  We will add the peak matrix to the ArchR object.
  
@@ -359,199 +312,10 @@ print(paste0("Dimensions of the peak matrix are:", paste(dim(peakMatrix), collap
 ```
 
 
-# Marker Peaks
-
-To find variable features we can use the `getMArkerFeatures` function.  
-
-```{r}
-markerPeaks_celltpyes <- getMarkerFeatures(
-  ArchRProj = proj,
-  groupBy = "celltypes",
-  useMatrix = "PeakMatrix", 
-  bias = c("TSSEnrichment", "log10(nFrags)"),
-  testMethod = "wilcoxon",
-  maxCells = 500,
-  scaleTo = 1e4, # each column of the peak matrix will be scaled to a column sum of 1e4
-  k = 100, # the number of nearby cells to use for selecting a background of bias-matched cells
-  bufferRatio = .8, # select the top 80 best matched cells out of the 100 nearest neighbors
-  binarize = TRUE # indicates whether a peak is present in a cell or not
-)
-
-
-#remove anything with FDR under .01 and Log2FC below 1:
-markerPeaks_celltypes_subset <- markerPeaks_celltpyes[]
-
-#print(paste0("The number of marker peaks when finding peaks for individual celltypes is: ", ))
-```
-
-```{r}
-markerPeaks_celltypes_list <- getMarkers(markerPeaks_celltpyes,
-                                         cutOff = "FDR <= .01 & Log2FC >= 1")
-markerPeaks_celltypes_list
-```
-Heatmap:
-
-```{r, fig.width=15, fig.height=15}
-heatmapPeaks <- plotMarkerHeatmap(
-  seMarker = markerPeaks_celltpyes,
-  cutOff = "FDR <= .01 & Log2FC >= 1", 
-  transpose = FALSE
-)
-
-draw(heatmapPeaks, heatmap_legend_side = "bot", annotation_legend_side = "bot")
-
-```
-
-
-```{r}
-getCellColData(proj) %>% as.data.frame() %>% group_by(celltypes) %>% 
-  summarise(n = n())
-```
-
-
-Volcano Plot:
-
-```#{r}
-
-celltypes <- unique(getCellColData(proj)$celltypes)
-
-volcano_plots <- map(celltypes, function(n){
-  plots <- plotMarkers(seMarker = markerPeaks_celltpyes, name = n, cutOff = "FDR <= 0.1 & Log2FC >= 1", plotAs = "Volcano") +
-    labs(title = paste0(n))
-})
-
-gridExtra::grid.arrange(grobs = beforeQC, ncol = 3)
-
-```
-
-## Find Marker Peaks for time points and celltypes simultaneously
-
-```{r}
-new_coldata <- getCellColData(proj) %>% as.data.frame() %>% mutate(timepoint = str_remove(Sample, "_rep[1-2]")) %>% 
-  unite("time_celltype", timepoint, celltypes, sep = "_", remove = FALSE)
-
-new_coldata  %>% 
-  group_by(time_celltype) %>% summarise(n = n())
-
-
-proj <- addCellColData(
-  ArchRProj = proj,
-  data = setNames(new_coldata$time_celltype, as.character(rownames(new_coldata)) ),
-  name = "time_celltype", 
-  cells = rownames(new_coldata), 
-  force = FALSE
-)
-
-getCellColData(proj) %>% as.data.frame() %>% group_by(time_celltype) %>% 
-  summarise(n = n())
-```
-
-
-We have to subset our project based on groups which contain too little cells.
-
-```{r}
-blood_cells <- getCellColData(proj) %>% as.data.frame() %>% rownames_to_column("cell") %>% 
-  filter(celltypes %in% c("Erythroid1", "Erythroid2", "Erythroid3", 
-                          "Blood_progenitors_1", "Blood_progenitors_2"))
-
-subset_archr <- subsetArchRProject(
-  ArchRProj = proj,
-  cells = blood_cells$cell,
-  outputDirectory = "Archr_blood_cells"
-)
-```
-
-
-```{r}
-groups_to_keep <- (getCellColData(proj) %>% as.data.frame() %>% group_by(timepoint_celltype) %>%
-    summarise(n = n()) %>% filter(n > 30 ) %>% ungroup())[["timepoint_celltype"]]
-
-cells_to_keep <- rownames(getCellColData(proj) %>% as.data.frame() %>% filter(timepoint_celltype %in% groups_to_keep))
-
-subset_proj <- proj[proj$cellNames %in% cells_to_keep, ]
-```
-
-
-```{r}
-markerPeaks_timepoint <- getMarkerFeatures(  ArchRProj = subset_archr,
-  groupBy = "time_celltype",
-  useMatrix = "PeakMatrix", 
-  bias = c("TSSEnrichment", "log10(nFrags)"),
-  testMethod = "wilcoxon",
-  maxCells = 500,
-  scaleTo = 1e4, # each column of the peak matrix will be scaled to a column sum of 1e4
-  k = 100, # the number of nearby cells to use for selecting a background of bias-matched cells
-  bufferRatio = .8, # select the top 80 best matched cells out of the 100 nearest neighbors
-  binarize = TRUE # indicates whether a peak is present in a cell or not)
-)
-```
-
-
-```{r}
-heatmapPeaks <- plotMarkerHeatmap(
-  seMarker = markerPeaks_timepoint,
-  cutOff = "FDR <= .01 & Log2FC >= 1", 
-  transpose = FALSE, 
-  nLabel = 15
-)
-
-draw(heatmapPeaks, heatmap_legend_side = "bot", annotation_legend_side = "bot")
-```
-
-All Timepoints
-
-```{r}
-timepoints <- (getCellColData(proj) %>% as.data.frame() %>%  group_by(time_celltype) %>% summarise(n = n()) %>% 
-  filter(n > 30)) [["time_celltype"]]
-cells <- rownames(getCellColData(proj) %>% as.data.frame() %>% 
-                    filter(time_celltype %in% timepoints))
-
-proj[cells,]
-```
-
-
-```{r}
-# all time points
-markerPeaks_all_timepoint <- getMarkerFeatures(  ArchRProj = proj[cells,],
-  groupBy = "time_celltype",
-  useMatrix = "PeakMatrix", 
-  bias = c("TSSEnrichment", "log10(nFrags)"),
-  testMethod = "wilcoxon",
-  maxCells = 500,
-  scaleTo = 1e4, # each column of the peak matrix will be scaled to a column sum of 1e4
-  k = 100, # the number of nearby cells to use for selecting a background of bias-matched cells
-  bufferRatio = .8, # select the top 80 best matched cells out of the 100 nearest neighbors
-  binarize = TRUE # indicates whether a peak is present in a cell or not)
-)
-```
-
-
-```{r, fig.width=15, fig.height=10}
-heatmapPeaks <- plotMarkerHeatmap(
-  seMarker = markerPeaks_all_timepoint,
-  cutOff = "FDR <= .01 & Log2FC >= 1", 
-  transpose = FALSE, 
-  nLabel = 15
-)
-
-draw(heatmapPeaks, heatmap_legend_side = "bot", annotation_legend_side = "bot")
-```
-
 
 # Peak to Gene Linkage
 
 # Getting peaks2gene links took less than 5 minutes.
-
-Manu uses all peaks on the same chromosome. The question is whether we would
-like to remove peaks prior to this step based on variability between celltypes 
-for example. 
-
-When adding the peak-to-gene links, cells are first aggregated into groups. For
-this a KNN graph is built. Then the 100 nearest neighbors are used to create single 
-cell groups. These cell groups are therefore based on similarity between cells. The
-maximum distance allowed between a peak and a gene is 250,000 by default, however
-here we try to not set a limit, because Manu also considers all peaks which are on
-the same genome. 
 
 ```#{r}
 proj <- addPeak2GeneLinks(  ArchRProj = proj,

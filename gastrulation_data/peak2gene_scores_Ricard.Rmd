@@ -1,5 +1,5 @@
 ---
-title: "Gene Activity Score"
+title: "Peak2Gene links and gene activity score"
 output: 
   html_document:
     toc: true
@@ -42,34 +42,19 @@ h5disableFileLocking()})
 
 
 ```{r}
-# load ArchR project
-proj <- loadArchRProject(path = "04_peak_calling_ArchRobject/")
+proj <- loadArchRProject("11_added_Ricards_peaks/")
 ```
 
+```{r}
+proj <- addPeak2GeneLinks(  ArchRProj = proj,
+  reducedDims  = "atac_LSI_100000",
+  useMatrix = "GeneExpressionMatrix",
+  maxDist = 250000,
+  verbose = FALSE, 
+  )
+```
 
-# Computing gene activity scores from Peak2Gene Links
-
-The following function is based on the function used in Cicero to compute gene
-activity scores from co-accessibility scores of sites linked to each gene k. For
-more information on how the calculation is implemented in Cicero see here:
-https://www.sciencedirect.com/science/article/pii/S1097276518305471?via%3Dihub#sec4
-
-
-
-## Implementation for peak-to-gene linkage matrix
-
-The main idea is to adapt the function which is used to determine gene activity
-scores based on co-accessibility scores (scATAC-seq data only, no 
-scRNA-seq data) to our case. For our case we want it to work for peak-to-gene
-links. Here we do not want to differentiate between proximal and distal sites of
-a gene, but simply use all peaks which are correlated with our gene k. 
-
-To create peak-to-gene links, cell aggregates were created and the peak regions
-were correlated with the gene regions across all cells. 
-
-Below you can see the peak-to-gene linkage dataframe. 
-
-```{r, results = "asis"}
+```{r}
 p2g <- getPeak2GeneLinks(
   ArchRProj = proj,
   corCutOff = -1,
@@ -79,47 +64,36 @@ p2g <- getPeak2GeneLinks(
   varCutOffRNA = .25, 
   returnLoops = FALSE
 )
+```
 
+```{r}
 print(paste0("Number of peak2gene links found: ", dim(p2g)))
-print(paste0("Number of unqique peaks linked to genes: ", length(unique(p2g$idxATAC))))
-print(paste0("Number of unqique genes linked to genes: ", length(unique(p2g$idxRNA))))
 print(paste0("Total number of peaks called in the dataset: ", length(metadata(p2g)$peakSet)))
 print(paste0("For each of the peaks we have metadata containing information on peakType, nearestGene, disttoGeneStart,etc..."))
 
-p2g %>% head %>% knitr::kable()
-```
-
-```{r}
-# read in ATAC metadata created by ArchR
-seATAC <- readRDS("/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/03_added_gene_expression_ArchRobject/Peak2GeneLinks/seATAC-Group-KNN.rds")
-
-#read in RNA metadata created by ArchR
-RNA_meta <- readRDS("/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/03_added_gene_expression_ArchRobject/Peak2GeneLinks/seRNA-Group-KNN.rds")
 ```
 
 
-First, we will create a sparse matrix for the peak2gene links from the dataframe
-shown above.
-
-This is our correlation matrix $U \in{\mathbb{R}^{KxJ}}$ with $K$ being
-the total number of genes and $J$ being the total number of peaks. Each entry
-$U_{kj}$ corresponds to the correlation value between peak $j$ and gene $k$ across
-all cell aggregates. 
-
-ToDo: Is peak matrix binary? Should it be binary?
+First we will try not to binarize the matrix
 
 ```{r}
-# the peak matrix contains idx numbers as rows -> we can link these to peak coordinates
-# and cellnames as columns
-
-# extract peak SE from the project
-peakset <- getMatrixFromProject(proj, useMatrix = "PeakMatrix", binarize = TRUE)
+peaks <- getMatrixFromProject(proj, useMatrix = "PeakMatrix", binarize = FALSE)
 
 # get matrix
-peak_mat <- assays(peakset)[[1]]
+peak_mat <- assays(peaks)[[1]]
 
+peakset <- as_tibble(getPeakSet(proj))
+peakset <- peakset %>% unite(chr_idx, seqnames, idx, sep = "_", remove = FALSE)
+```
+
+
+
+
+
+
+```{r}
 # use index to asssign rownames to the matrix
-rownames(peak_mat) <- rowData(peakset)$idx
+rownames(peak_mat) <- peakset$chr_idx
 
 
 # extract gene expression SE from the project
@@ -128,24 +102,71 @@ gene_expression <- getMatrixFromProject(proj, useMatrix = "GeneExpressionMatrix"
 print(paste0("The peak matrix has dimensions: ", dim(peak_mat)[[1]], " peaks and ", dim(peak_mat)[[2]], "cells"))
 print(paste0("The gene expression matrix contains ", dim(gene_expression) [[1]], " genes"))
 
-
-# create column and row indices for the unique peak and rna indices
-p2g$ColIndex <- match(p2g$idxATAC, unique(p2g$idxATAC))
-p2g$RowIndex <- match(p2g$idxRNA, unique(p2g$idxRNA))
-
-# create a sparse matrix with the correlation values
-p2g_mat <- sparseMatrix(i = p2g$RowIndex, 
-                        j = p2g$ColIndex,
-                        x = p2g$Correlation,
-                        dims = c(length(unique(p2g$idxRNA)),
-                                 length(unique(p2g$idxATAC))),
-                        dimnames = list(unique(p2g$idxRNA), 
-                                        unique(p2g$idxATAC)))
-
-print(paste0("The sparse matrix of correlations has dimensions: ", dim(p2g_mat)[[1]], " genes and ", dim(p2g_mat)[[2]], " peaks."))
-
 ```
 
+
+The p2g dataframe has a metadata component which contains a Granges object of 
+the relevant peaks. The idxATAC column of the p2g dataframe corresponds to this 
+Granges object. Below we extract the chr & chr_idx for later. We will also 
+extract the gene names based on the idx. 
+
+```{r}
+metadata_p2g <- as.data.frame(metadata(p2g)[[1]])
+metadata_p2g <- metadata_p2g %>%  rownames_to_column("idxATAC") %>% 
+  group_by(seqnames) %>% 
+  # create idx per chromosome
+  mutate(idx = seq_along(seqnames)) %>% ungroup() %>% 
+  # create chr & index combination column, will be needed, since this is how we name peak matrix
+  tidyr::unite(chr_idx, seqnames, idx, remove = FALSE, sep = "_")
+
+
+#fitler to get only the peaks which we have in the p2g links dataframe
+atac_chr_idx <- metadata_p2g %>% filter(idxATAC %in% p2g$idxATAC) %>%
+  select(idxATAC, chr_idx) 
+
+atac_chr_idx$idxATAC <- as.integer(atac_chr_idx$idxATAC)
+
+# now we can merge this with the p2g dataframe based on the idxATAC column
+p2g_idx <- inner_join(atac_chr_idx, p2g, by = "idxATAC",copy = TRUE)
+```
+
+
+```{r}
+# get gene names
+metadata_p2g_rna <- as.data.frame(metadata(p2g)[[2]])
+rna_idx <- metadata_p2g_rna %>% rownames_to_column("idxRNA") %>% 
+  group_by(seqnames) %>% 
+  mutate(idx = seq_along(seqnames)) %>% ungroup() %>% 
+  tidyr::unite(chr_idx_rna, seqnames, idx, remove = FALSE, sep = "_") %>% 
+  filter(idxRNA %in% p2g_idx$idxRNA) %>% 
+  select(idxRNA, name, chr_idx_rna) %>% rename("gene" = name)
+
+rna_idx$idxRNA <- as.integer(rna_idx$idxRNA)
+
+# combine this with the p2g dataframe
+p2g_idx <- inner_join(rna_idx, p2g_idx, by = "idxRNA", copy = TRUE)
+```
+
+Create a peak-to-gene link matrix:
+
+```{r}
+# create column and row indices for the unique peak and rna indices
+p2g_idx$ColIndex <- match(p2g_idx$chr_idx, unique(p2g_idx$chr_idx))
+p2g_idx$RowIndex <- match(p2g_idx$gene, unique(p2g_idx$gene))
+
+# create a sparse matrix with the correlation values
+p2g_mat <- sparseMatrix(i = p2g_idx$RowIndex, 
+                        j = p2g_idx$ColIndex,
+                        x = p2g_idx$Correlation,
+                        dims = c(length(unique(p2g_idx$gene)),
+                                 length(unique(p2g_idx$chr_idx))),
+                        dimnames = list(unique(p2g_idx$gene), 
+                                        unique(p2g_idx$chr_idx)))
+
+print(paste0("The sparse matrix of correlations has dimensions: ", dim(p2g_mat)[[1]], " genes and ", dim(p2g_mat)[[2]], " peaks."))
+```
+
+# Gene activity score computation
 
 Now we will calculate a weighted sum of accessible peaks in a cell. The weights
 are the corresponding correlation values between a particular peak $j$ and gene
@@ -160,16 +181,22 @@ $R = U I$ with $R \in \mathbb{R}^{KxI}$.
 Below you can see the first few entries of this gene activity score matrix. Note 
 that some entries are negative.
 
+Try to simply divide by row sums: $\frac{U_{kj}}{\sum_{j}{U_{kj}}}$.
+
 ```{r}
 # we subset the accessibility matrix to contain only peaks which are also 
 # included in our p2g matrix
-peak_mat_subset <- peak_mat[as.integer(colnames(p2g_mat)), ]
+peak_mat_subset <- peak_mat[colnames(p2g_mat), ]
+
+# normalize the p2g matrix by the total numbe of peaks linked to each gene
+#p2g_mat_norm <- p2g_mat / rowSums(p2g_mat)
 
 # Now we can compute a weighted sum of peak2gene correlations for each
 # peak and gene
 corr_sum <- p2g_mat %*% peak_mat_subset
 print(corr_sum[1:5, 1:5])
 ```
+
 
 ### Linear regression to account for differences in library size.
 
@@ -182,6 +209,8 @@ $\log{\sum_{k}{r_k} = \beta_0 + \beta_A \log(\sum_j{A_{ji}})}$
 # lets create a copy of the matrix
 scores <- corr_sum
 
+print(dim(scores))
+print(dim(peak_mat_subset))
 # create a dataframe for computing the linear model
 normalization_df <- data.frame(cell = colnames(scores),
                                total_activity = colSums(scores),
@@ -207,6 +236,7 @@ normalization_df %>% ggplot(aes(x = total_sites, y = fitted_curve)) + geom_point
 
 print(paste0("Mean fitted activity: ", mean(normalization_df$fitted_curve)))
 ```
+
 
 ### SizeFactors
 
@@ -255,14 +285,6 @@ df %>% ggplot(aes(x = total_sites, y = total_activity)) +
 print(paste0("Mean activity after correction (expected to be the same as the mean of the fitted activity: ", mean(df$total_activity)))
 ```
 
-```{r}
-min(new_scores)
-max(new_scores)
-colSums(new_scores) %>% head
-```
-
-
-
 
 ### Transform
 
@@ -290,9 +312,10 @@ print(new_scores[1:5, 1:5])
 ```{r}
 min(new_scores)
 max(new_scores)
-colSums(new_scores) %>% head
 ```
 
+
+### Scaling
 
 Here, you can see the first few entries of the transformed matrix. The column
 sum is now 1. 
@@ -315,80 +338,22 @@ corrected_df <- data.frame(cell = colnames(corr_sum),
 corrected_df %>% ggplot(aes(x = total_sites, y = total_activity)) + geom_point()
 
 
-print(paste0("The maximum value is: ", min(new_scores)))
-print(paste0("The minimum value is: ", max(new_scores)))
+print(paste0("The minimum value is: ", min(new_scores)))
+print(paste0("The maximum value is: ", max(new_scores)))
 ```
 
 
+
+
 ```{r}
-gene_attr <- tibble::tibble(
+tibble::tibble(
   gene = rownames(new_scores),
   mean = Matrix::rowMeans(new_scores), 
   detection_rate = Matrix::rowMeans(new_scores > 0), 
   var = MatrixGenerics::rowVars(new_scores)) %>%
   mutate(log10_mean = log10(mean),
-         log10_var = log10(var))
-
-ggplot(gene_attr, aes(log10_mean, log10_var)) + 
-  geom_point(alpha = 0.3, shape = 16) + 
-  geom_density_2d(size = 0.3, bins = 6) + 
-  geom_abline(intercept = 0, slope = 1, color = "red") +
-  labs(x = "Log10 Mean y", "Log10 Var y")
-```
-
-
-For one cell plot the distribution of gene activity scores:
-
-```{r}
-data.frame(x = new_scores[1,]) %>% ggplot(aes(x = x)) + geom_histogram() +
-  scale_y_log10()
-```
-
-Same for gene expression:
-
-```{r}
-gene_expression_mat <- assays(gene_expression)[[1]]
-data.frame(x = gene_expression_mat[1,]) %>% ggplot(aes(x = x)) + geom_histogram() +
-  scale_y_log10()
-
-```
-
-
-```{r}
-gene_attr <- tibble::tibble(
-  gene = rownames(gene_expression_mat),
-  mean = Matrix::rowMeans(gene_expression_mat), 
-  detection_rate = Matrix::rowMeans(gene_expression_mat > 0), 
-  var = MatrixGenerics::rowVars(gene_expression_mat)) %>%
-  mutate(log10_mean = log10(mean),
-         log10_var = log10(var))
-
-ggplot(gene_attr, aes(log10_mean, log10_var)) + 
-  geom_point(alpha = 0.3, shape = 16) + 
-  geom_density_2d(size = 0.3, bins = 6) + 
-  geom_abline(intercept = 0, slope = 1, color = "red") +
-  labs(x = "Log10 Mean y", "Log10 Var y")
-```
-
-
-```{r}
-gene_scores <- getMatrixFromProject(proj, useMatrix = "GeneScoreMatrix")
-
-gene_scores_mat <- assays(gene_scores)[[1]]
-
-min(gene_scores_mat)
-max(gene_scores_mat)
-
-
-gene_attr <- tibble::tibble(
-  gene = rownames(gene_scores_mat),
-  mean = Matrix::rowMeans(gene_scores_mat), 
-  detection_rate = Matrix::rowMeans(gene_scores_mat > 0), 
-  var = MatrixGenerics::rowVars(gene_scores_mat)) %>%
-  mutate(log10_mean = log10(mean),
-         log10_var = log10(var))
-
-ggplot(gene_attr, aes(log10_mean, log10_var)) + 
+         log10_var = log10(var)) %>% 
+  ggplot(aes(log10_mean, log10_var)) + 
   geom_point(alpha = 0.3, shape = 16) + 
   geom_density_2d(size = 0.3, bins = 6) + 
   geom_abline(intercept = 0, slope = 1, color = "red") +
@@ -397,4 +362,35 @@ ggplot(gene_attr, aes(log10_mean, log10_var)) +
 
 
 
+# Add gene score matrix to ArchR project
 
+
+```{r}
+# get the Granges object from the Archr project
+archr_granges <-getGenes(proj)
+
+# filter for genes which are included in the gene expression matrix
+granges <- subset(archr_granges, symbol %in% rownames(new_scores))
+```
+
+
+
+
+We will now add the gene expression matrix to the ArchR object. First, we have to 
+convert the Single Cell Experiment to a Summarized Experiment.
+
+```{r}
+# create summarized experiment of the scRNA-seq
+seRNA <- SummarizedExperiment(assays = list(counts=new_scores),
+                          colData = colnames(new_scores),
+                          rowRanges = granges)
+seRNA
+
+
+# add RNA gene expression matrix to the ArchR object
+proj <- addGeneExpressionMatrix(input = proj, seRNA = seRNA, force = TRUE)
+
+
+# save the ArchR object with the added gene expression matrix
+saveArchRProject(proj, outputDirectory = "13_added_gene_score_from_p2g/", load = FALSE)
+```

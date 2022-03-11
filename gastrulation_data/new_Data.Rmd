@@ -1,0 +1,120 @@
+---
+title: "Check out the new processed dataset from Ricard"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 5
+    code_folding: hide
+    toc_float: true
+    code_download: true
+    theme: cosmo
+    highlight: textmate
+---
+
+<style>
+body {
+text-align: justify}
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(cache = FALSE, autodep = TRUE, 
+                      collapse = TRUE, message = FALSE)
+knitr::opts_knit$set(root.dir = "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/")
+setwd("/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/")
+
+set.seed(1)
+```
+
+  
+```{r}
+## Load libraries
+
+
+library(ArchR)
+library(knitr)
+library(rhdf5)
+library(uwot)
+library(tidyverse)
+library(scater)
+library(reticulate)
+library(zellkonverter)
+#library(caret)
+h5disableFileLocking()
+```
+
+
+```{r}
+# load ArchR project
+proj_peaks <- loadArchRProject(path = "04_peak_calling_ArchRobject/")
+peakset <- getPeakSet(proj_peaks)
+```
+
+
+The data includes 180,499 peaks and 45,991 cells. The peakset we got after caling 
+peaks contains 512,953 peaks. I will have to filter out some peaks based on variability
+
+```{r}
+proc_atac2 <- readH5AD("jupyter_notebooks/anndata_atac_peak_matrix.h5ad")
+```
+
+```{r}
+proc_atac2
+```
+
+
+```{r}
+assays(proc_atac2)[[1]][1:5, 1:5]
+```
+
+
+```{r, results= "asis"}
+df <- as.data.frame(colData(proc_atac2))
+
+df %>% group_by(Sample) %>% summarize(n = n()) %>% knitr::kable()
+```
+
+In this dataset all cells pass RNA QC and ATAC QC!. We have 45,991 cells in 
+total. In the old dataset we had only 38,158 and had to remove some, because 
+they did not pass RNA QC!
+
+```{r}
+df %>% group_by(pass_rnaQC) %>% summarise(n = n())
+df %>% group_by(PassQC) %>% summarise(n = n())
+```
+
+
+Lets have a look at the distribution of peak scores in the dataset. We might
+want to put a similar threshold on the peak scores as well.
+
+```{r}
+rowData(proc_atac2) %>% as.data.frame() %>% ggplot() +
+  geom_histogram(aes(x = score), bins = 200)
+
+min(rowData(proc_atac2)$score)
+max(rowData(proc_atac2)$score)
+```
+
+
+```{r}
+peakset %>% mutate(celltype = str_remove(GroupReplicate, "._.E[7-8].[0-80]_rep[1-2]"))
+%>% group_by(celltype) %>% summarize
+```
+
+
+```{r}
+peakset %>% group_by(GroupReplicate) %>% summarize(n = n())
+```
+
+```{r}
+peakset %>% ggplot(aes(x = replicateScoreQuantile)) + geom_histogram(bins = 100)
+```
+
+
+
+
+```{r}
+peakset %>% summarize(q25 = quantile(score, .25), 
+                      q50 = quantile(score, .5),
+                      q75 = quantile(score, .75))
+```
+

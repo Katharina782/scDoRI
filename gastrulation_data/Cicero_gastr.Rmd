@@ -243,9 +243,7 @@ dist_conns <- conns %>%
   mutate(peak2bp = round((as.integer(start_peak2) + as.integer(end_peak2))/2)) %>% 
   # add a column for the absolute distance in bp between all peaks
   mutate(distance = abs(peak2bp - peak1bp))
-
-dist_conns %>% head
-
+test
 ```
 
 ```{r}

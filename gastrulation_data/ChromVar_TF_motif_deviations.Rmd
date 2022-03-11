@@ -1,0 +1,117 @@
+---
+title: "ChromVar"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 5
+    code_folding: hide
+    toc_float: true
+    code_download: true
+    theme: cosmo
+    highlight: textmate
+---
+
+<style>
+body {
+text-align: justify}
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(cache = FALSE, autodep = TRUE, 
+                      collapse = TRUE, message = FALSE)
+knitr::opts_knit$set(root.dir = "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/")
+setwd("/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/")
+
+set.seed(1)
+```
+
+  
+```{r}
+## Load libraries
+
+
+suppressPackageStartupMessages(library(ArchR))
+library(knitr)
+library(rhdf5)
+library(uwot)
+library(tidyverse)
+library(scater)
+library(zellkonverter)
+library(corrplot)
+library(Seurat)
+#library(caret)
+h5disableFileLocking()
+```
+
+```{r}
+proj <- loadArchRProject("11_added_Ricards_peaks/")
+```
+
+# Add Peak Matrix
+
+```{r}
+proj <- addPeakMatrix(ArchRProj = proj)
+```
+
+
+
+# add Motif Annotations
+
+TIME: This took 15 min.
+
+```{r}
+proj <- addMotifAnnotations(ArchRProj = proj, motifSet = "cisbp", name = "Motif")
+```
+
+# Create Background Peaks
+
+Lets add a set of background peaks. Cells are sampled based on similarity in 
+GC-content and number of fragments across all samples using the Mahalonobis 
+distance.
+
+TODO: maybe we should reduce the number of background peaks for cells with few
+peaks.
+
+TIME: This took less than a min.
+```{r}
+# 
+proj <- addBgdPeaks(proj, 
+                         nIterations = 50) # 50 background peaks are selected
+
+```
+
+
+# Add the deviations
+
+TIME: 6h
+
+```{r}
+proj <- addDeviationsMatrix(
+  ArchRProj = proj, 
+  peakAnnotation = "Motif",
+  matrixName = "MotifMatrix",
+  force = TRUE
+)
+```
+
+```{r}
+saveArchRProject(proj, outputDirectory = "12_Ricards_peaks_ChromVar/", load = FALSE)
+
+```
+
+
+
+
+Dataframe of the deviations:
+
+```#{r}
+VarDev <- getVarDeviations(proj, name = "MotifMatrix", plot = FALSE)
+```
+
+Plot Motif Deviations:
+
+```#{r}
+plotVarDev <- getVarDeviations(proj, name = "MotifMatrix", plot = TRUE)
+```
+
+

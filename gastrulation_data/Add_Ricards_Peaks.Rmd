@@ -1,0 +1,77 @@
+---
+title: "Add existing peakset"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 5
+    code_folding: hide
+    toc_float: true
+    code_download: true
+    theme: cosmo
+    highlight: textmate
+---
+
+<style>
+body {
+text-align: justify}
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(cache = FALSE, autodep = TRUE, 
+                      collapse = TRUE, message = FALSE)
+knitr::opts_knit$set(root.dir = "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/")
+setwd("/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/")
+
+set.seed(1)
+```
+
+  
+```{r}
+## Load libraries
+
+
+suppressPackageStartupMessages({library(ArchR)
+library(knitr)
+library(rhdf5)
+library(uwot)
+library(tidyverse)
+library(scater)
+library(reticulate)
+library(dichromat)
+library(zellkonverter)
+#library(caret)
+h5disableFileLocking()
+})
+```
+
+
+```{r}
+proj <- loadArchRProject(path = "08_ArchRobject_all_timepoints_added_gene_expr/")
+```
+
+
+
+```{r}
+atacSE <- readH5AD("jupyter_notebooks/anndata_atac_peak_matrix.h5ad")
+atacSE <- atacSE[, proj$cellNames]
+```
+
+
+```{r}
+granges_peaks <- rowData(atacSE) %>% GRanges()
+```
+
+
+```{r}
+proj <- addPeakSet(
+  ArchRProj = proj,
+  peakSet = granges_peaks,
+  genomeAnnotation = getGenomeAnnotation(proj),
+  force = FALSE
+)
+```
+
+```{r}
+saveArchRProject(proj, "11_added_Ricards_peaks/", load = FALSE)
+```
+
