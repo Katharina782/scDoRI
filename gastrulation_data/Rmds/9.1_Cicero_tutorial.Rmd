@@ -1,0 +1,139 @@
+---
+title: "Cicero"
+output: html_document
+---
+
+
+```{r}
+library(cicero)
+
+```
+
+```{r}
+# Code to download (54M) and unzip the file - can take a couple minutes 
+# depending on internet connection:
+temp <- textConnection(readLines(gzcon(url("http://staff.washington.edu/hpliner/data/kidney_data.txt.gz"))))
+
+# read in the data
+cicero_data <- read.table(temp)
+
+
+input_cds <- make_atac_cds(cicero_data, binarize = TRUE)
+
+```
+
+```{r}
+set.seed(2017)
+input_cds <- detect_genes(input_cds)
+input_cds <- estimate_size_factors(input_cds)
+input_cds <- preprocess_cds(input_cds, method = "LSI")
+input_cds <- reduce_dimension(input_cds, reduction_method = 'UMAP', 
+                              preprocess_method = "LSI")
+```
+
+```{r}
+umap_coords <- reducedDims(input_cds)$UMAP
+cicero_cds <- make_cicero_cds(input_cds, reduced_coordinates = umap_coords)
+```
+
+
+```{r}
+data("mouse.mm9.genome")
+# use only a small part of the genome for speed
+sample_genome <- subset(mouse.mm9.genome, V1 == "chr2")
+sample_genome$V2[1] <- 10000000
+
+## Usually use the whole mouse.mm9.genome ##
+## Usually run with sample_num = 100 ##
+conns <- run_cicero(cicero_cds, sample_genome, sample_num = 2) 
+head(conns)
+```
+
+
+```{r}
+# Download the GTF associated with this data (mm9) from ensembl and load it
+# using rtracklayer
+
+# download and unzip
+temp <- tempfile()
+download.file("ftp://ftp.ensembl.org/pub/release-65/gtf/mus_musculus/Mus_musculus.NCBIM37.65.gtf.gz", temp)
+gene_anno <- rtracklayer::readGFF(temp)
+unlink(temp)
+
+# rename some columns to match requirements
+gene_anno$chromosome <- paste0("chr", gene_anno$seqid)
+gene_anno$gene <- gene_anno$gene_id
+gene_anno$transcript <- gene_anno$transcript_id
+gene_anno$symbol <- gene_anno$gene_name
+```
+
+```{r}
+#### Add a column for the pData table indicating the gene if a peak is a promoter ####
+# Create a gene annotation set that only marks the transcription start sites of 
+# the genes. We use this as a proxy for promoters.
+# To do this we need the first exon of each transcript
+pos <- subset(gene_anno, strand == "+")
+pos <- pos[order(pos$start),] 
+# remove all but the first exons per transcript
+pos <- pos[!duplicated(pos$transcript),] 
+# make a 1 base pair marker of the TSS
+pos$end <- pos$start + 1 
+
+neg <- subset(gene_anno, strand == "-")
+neg <- neg[order(neg$start, decreasing = TRUE),] 
+# remove all but the first exons per transcript
+neg <- neg[!duplicated(neg$transcript),] 
+neg$start <- neg$end - 1
+
+gene_annotation_sub <- rbind(pos, neg)
+
+# Make a subset of the TSS annotation columns containing just the coordinates 
+# and the gene name
+gene_annotation_sub <- gene_annotation_sub[,c("chromosome", "start", "end", "symbol")]
+
+# Rename the gene symbol column to "gene"
+names(gene_annotation_sub)[4] <- "gene"
+
+input_cds <- annotate_cds_by_site(input_cds, gene_annotation_sub)
+
+tail(fData(input_cds))
+# DataFrame with 6 rows and 7 columns
+#                                 site_name         chr       bp1       bp2
+#                                  <factor> <character> <numeric> <numeric>
+# chrY_590469_590895     chrY_590469_590895           Y    590469    590895
+# chrY_609312_609797     chrY_609312_609797           Y    609312    609797
+# chrY_621772_623366     chrY_621772_623366           Y    621772    623366
+# chrY_631222_631480     chrY_631222_631480           Y    631222    631480
+# chrY_795887_796426     chrY_795887_796426           Y    795887    796426
+# chrY_2397419_2397628 chrY_2397419_2397628           Y   2397419   2397628
+#                      num_cells_expressed   overlap        gene
+#                                <integer> <integer> <character>
+# chrY_590469_590895                     5        NA          NA
+# chrY_609312_609797                     7        NA          NA
+# chrY_621772_623366                   106         2       Ddx3y
+# chrY_631222_631480                     2        NA          NA
+# chrY_795887_796426                     1         2       Usp9y
+# chrY_2397419_2397628                   4        NA          NA
+
+#### Generate gene activity scores ####
+# generate unnormalized gene activity matrix
+unnorm_ga <- build_gene_activity_matrix(input_cds, conns)
+
+# remove any rows/columns with all zeroes
+unnorm_ga <- unnorm_ga[!Matrix::rowSums(unnorm_ga) == 0, 
+                       !Matrix::colSums(unnorm_ga) == 0]
+
+# make a list of num_genes_expressed
+num_genes <- pData(input_cds)$num_genes_expressed
+names(num_genes) <- row.names(pData(input_cds))
+
+# normalize
+cicero_gene_activities <- normalize_gene_activities(unnorm_ga, num_genes)
+
+# if you had two datasets to normalize, you would pass both:
+# num_genes should then include all cells from both sets
+unnorm_ga2 <- unnorm_ga
+cicero_gene_activities <- normalize_gene_activities(list(unnorm_ga, unnorm_ga2), 
+                                                    num_genes)
+```
+

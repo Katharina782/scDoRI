@@ -1,0 +1,563 @@
+---
+title: "ChromVar"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 5
+    code_folding: hide
+    toc_float: true
+    code_download: true
+    theme: cosmo
+    highlight: textmate
+---
+
+<style>
+body {
+text-align: justify}
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(cache = FALSE, autodep = TRUE, 
+                      collapse = TRUE, message = FALSE)
+knitr::opts_knit$set(root.dir = "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/")
+setwd("/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/")
+
+set.seed(1)
+```
+
+  
+```{r}
+## Load libraries
+
+
+suppressPackageStartupMessages(library(ArchR))
+library(knitr)
+library(rhdf5)
+library(uwot)
+library(tidyverse)
+library(scater)
+library(zellkonverter)
+library(corrplot)
+library(Seurat)
+library(Matrix)
+library(tidyverse)
+#library(caret)
+h5disableFileLocking()
+```
+
+```{r}
+proj <- loadArchRProject("12_Ricards_peaks_ChromVar/")
+```
+
+# Add Peak Matrix
+
+```#{r}
+proj <- addPeakMatrix(ArchRProj = proj)
+```
+
+
+
+# Add Motif Annotations
+
+This function uses a publicly available motifSet "cisbp". Behind the
+curtain it calls the function `motif_annotations <- motifmatchr::matchMotif(motifs, peaks, genome)` which finds matches between the
+accessible peak coordinates in `peaks` (which is a GRanges object of genomic
+regions for each peak) and the position weight matrices 
+for each transcription factor motif (`motif` is a PWMatrix). The output
+of `matchMotif()` is a binary matrix of dimensions motif x peaks with entries 
+equal to 1 if a motif is found in a particular peak and zero otherwise.
+
+This motif match matrix $M$ is then used to compute motif deviation z-scores 
+with ChromVar.
+
+The output of the `ArchR::addMotifAnnotations()` is stored as a peakAnnotation
+object and can be accessed via `getPeakAnnotation()`. This peakAnnotation 
+object contains the PWMatrixList for all transcription factors, a GRangesList
+containing of several GRanges objects, one for each transcription factor,
+with the genomic coordinates of the motif matches. Finally, it also contains a 
+binary Matches Matrix of dimensions peaks x motifs. 
+
+This function also takes as input custom motif annotations. For this, leave the
+parameter `motifSet`empty and instead provide your own PWMatrix for the 
+parameter `motifPWMs`. You could also change the parameters of the 
+`matchMotif()` function, so you get scores in addition to the binary motif 
+match matrix. For more details see the ArchR (https://www.archrproject.com/reference/addMotifAnnotations.html), ChromVar (https://greenleaflab.github.io/chromVAR/articles/Introduction.html#get-motifs-and-what-peaks-contain-motifs) and motifmatchr (https://greenleaflab.github.io/motifmatchr/articles/motifmatchr.html#options) documentation, as well as the ArchR source code, (https://rdrr.io/github/GreenleafLab/ArchR/src/R/AnnotationPeaks.R, https://rdrr.io/github/GreenleafLab/ArchR/src/R/MatrixDeviations.R).
+
+
+TIME: This took 15 min.
+
+```{r}
+#proj <- addMotifAnnotations(ArchRProj = proj, motifSet = "cisbp", name = "Motif")
+
+motifs <- getPeakAnnotation(proj, "Motif")
+motifs
+```
+
+# Create Background Peaks
+
+Lets add a set of background peaks. Cells are sampled based on similarity in 
+GC-content and number of fragments across all samples using the Mahalonobis 
+distance.
+
+TODO: maybe we should reduce the number of background peaks for cells with few
+peaks.
+
+TIME: This took less than a min.
+```#{r}
+# 
+proj <- addBgdPeaks(proj, 
+                         nIterations = 50) # 50 background peaks are selected
+
+```
+
+
+# Add the deviations
+
+TIME: 6h
+
+```{r, results = "asis"}
+#proj <- addDeviationsMatrix(
+#   ArchRProj = proj, 
+#   peakAnnotation = "Motif",
+#   matrixName = "MotifMatrix",
+#   force = TRUE
+# )
+
+motif_matrix = getVarDeviations(proj, name = "MotifMatrix", plot = FALSE)
+
+motif_matrix %>% head %>% knitr::kable()
+
+```
+
+```{r}
+#saveArchRProject(proj, outputDirectory = "12_Ricards_peaks_ChromVar/", load = FALSE)
+
+```
+
+
+
+
+Dataframe of the deviations:
+
+```#{r}
+VarDev <- getVarDeviations(proj, name = "MotifMatrix", plot = FALSE)
+```
+
+Plot Motif Deviations:
+
+```#{r}
+plotVarDev <- getVarDeviations(proj, name = "MotifMatrix", plot = TRUE)
+```
+
+
+# Mathematics behind ChromVar deviations/deviations z-score
+
+
+## 1. Compute foreground accessibility deviations 
+
+For each cell a raw deviation is computed. This can be interpreted as the 
+total accessibility of peaks with that motif minus the expected accessibility for a cell. 
+
+By default ChromVar uses a binary motif annotation matrix $M \in \mathbb{R}^{K*J}$ where $m_{kj} = 1$ if motif $k$ is found in peak $j$ and  $0$ otherwise. If we multiply this matrix $M$ with our peak accessibility matrix X,
+which is also binary (even though we could use a non-binary version with values
+between 0 and 4 as well), we get the sum of reads mapping to a particular peak
+in each cell $X \in \mathbb{R}^{I*J}$ with $x_{ij} = 1$ if peak $j$ is
+accessbile in cell $i$ and $0$ otherwise.
+
+Then $M x X^T$ can be interpreted as the sum of reads mapping to a peak
+which contains motif $k$. 
+
+The expected number of fragment for each peak $j$ in cell $i$ is:
+$E = \frac{\sum_{i = 1}{x_{ij}}}{\sum_{j = 1}{\sum_{i  = 1}{x_{ij}}}}(\sum_{j = 1}{x_{ij}})^T$
+
+The sum of reads mapping to peak $j$ across all cells is divided by the total 
+number of reads across all peaks and cells. This normalized column vector $\frac{\sum_{i = 1}{x_{ij}})}{\sum_{j = 1}{\sum_{i  = 1}{x_{ij}}}}$  of total number of reads per peak is taken as an outer product with the row vector $(\sum_{j = 1}{x_{ij}})^T$ which is the total number of reads across all peaks in each cell $i$. 
+
+If we multiply the motif annotations $M$ with the expected number of fragments
+$E$, we get $M x E^T \in \mathbb{R}^{K*I}$  which is the expected number
+of fragments mapping to a peak which contains motif $k$ in cell $i$. 
+
+The raw deviation is then computed as.
+
+$Y = \frac{MxX^T - MxE^T}{MxE^T}$ with $Y \in \mathbb{R}^{K*I}$
+
+The difference between reads mapping to a peak with motif k and the number of
+expected reads for any peak $j$ in cell $i$ indicates whether in a particular 
+cell there is a certain increase or decrease in accessible peaks with a particular motif. The deviation will be higher if there is an increase.
+
+```{r}
+# motif annotation matirix
+m <- tibble::tribble(
+  ~peak_1, ~peak_2, ~peak_3, ~peak_4, ~peak_5, ~peak_6, ~peak_7,
+  1, 0, 1, 0, 0, 0, 1,
+  0, 1, 0, 1, 0, 1, 0,
+  0, 1, 0, 1, 0, 0, 1,
+  1, 0, 1, 1, 1, 0, 1,
+) %>%
+  mutate(rownames = paste("motif_", 1:nrow(.))) %>%
+  column_to_rownames(var = "rownames") %>%
+  as.matrix()
+
+
+p1 <- ComplexHeatmap::pheatmap(
+   m, 
+   cluster_rows = F, cluster_cols = F,
+   display_numbers = T, 
+   fontsize_number = 12, 
+   column_names_side = c("top"),
+   row_names_side = c("left"),
+   angle_col = c("0"),
+   circlize::colorRamp2(c(0, max(m)), c("lightgreen", "darkgreen"), transparency = 0.5),
+   column_title = "Motif Annotations Matrix M",
+   heatmap_legend_param = list(title = "motif in peak")
+   ) 
+
+# accessibility matrix
+x <- tibble::tribble(
+  ~cell_A, ~cell_B, ~cell_C, ~cell_D, ~cell_E,
+  1, 0, 1, 0, 0,
+  0, 1, 0, 1, 0,
+  0, 1, 0, 1, 0,
+  1, 0, 1, 1, 1,
+  1, 0, 1, 0, 1,
+  1, 0, 0, 0, 1,
+  0, 1, 0, 1, 1
+) %>%
+  mutate(rownames = paste("peak_", 1:nrow(.))) %>%
+  column_to_rownames(var = "rownames") %>%
+  as.matrix()
+
+p2 <- ComplexHeatmap::pheatmap(
+   x, 
+   cluster_rows = F, cluster_cols = F,
+   display_numbers = T, 
+   fontsize_number = 12, 
+   column_names_side = c("top"),
+   row_names_side = c("left"),
+   angle_col = c("0"),
+   circlize::colorRamp2(c(0, max(x)), c("yellow", "darkorange"), transparency = 0.5),
+   column_title = "Accessibility Matrix X",
+   heatmap_legend_param = list(title = "accessible")
+   )
+  
+
+#gridExtra::grid.arrange(p1, p2, ncol = 2)
+
+#ht_list <- p1 + p2
+#draw(ht_list, ht_gap = unit(1, "cm"), show_heatmap_legend = FALSE)
+```
+
+```{r}
+# comput expect
+
+# define accessibility matrix
+x =   matrix(c(1, 0, 1, 0, 0, 0, 1, 0, 1, 0,
+  0, 1, 0, 1, 0,
+  1, 0, 1, 1, 1,
+  1, 0, 1, 0, 1,
+  1, 0, 0, 0, 1,
+  0, 1, 0, 1, 1), nrow = 7, ncol = 5)
+
+# define motif match matrix
+m = matrix(c(  1, 0, 1, 0, 0, 0, 1,
+  0, 1, 0, 1, 0, 1, 0,
+  0, 1, 0, 1, 0, 0, 1,
+  1, 0, 1, 1, 1, 0, 1), ncol = 7, nrow = 4)
+
+
+# compute elements for expect
+# get the sum of reads for a peak j across all cells, length = number of peaks
+total_read_per_peak = colSums(x)
+# get the sum of reads for a cell i across all peaks, length = number of cells
+total_read_per_cell = rowSums(x)
+# get the total accessbility across all cells and peaks
+total_reads = sum(x)
+
+
+# computing expect
+expect = outer(total_read_per_peak/total_reads, total_read_per_cell, "*")
+
+
+# compute deviations
+y = (m %*% x - m %*% t(expect)) / (m %*% t(expect))
+  
+  
+```
+
+```{r}
+
+expect_df <- as.data.frame(expect)
+colnames(expect_df) = (paste("peak", 1:ncol(expect_df)))
+rownames(expect_df) = paste("cell", 1:nrow(expect_df))
+
+# p1 <- ComplexHeatmap::pheatmap(
+#    expect_df, 
+#    cluster_rows = F, cluster_cols = F,
+#    display_numbers = T, 
+#    fontsize_number = 12, 
+#    column_names_side = c("top"),
+#    row_names_side = c("left"),
+#    angle_col = c("0"),
+#    circlize::colorRamp2(c(0, max(expect_df)), c("lightblue", "purple"), transparency = 0.5),
+#    column_title = "Expected Matrix E",
+#    heatmap_legend_param = list(title = "accessible")
+#    )
+
+p2 <- ComplexHeatmap::pheatmap(
+   t(expect_df), 
+   cluster_rows = F, cluster_cols = F,
+   display_numbers = T, 
+   fontsize_number = 12, 
+   column_names_side = c("top"),
+   row_names_side = c("left"),
+   angle_col = c("0"),
+   circlize::colorRamp2(c(0, max(expect_df)), c("lightblue", "purple"), transparency = 0.5),
+   column_title = "Transposed Expected Matrix E",
+   heatmap_legend_param = list(title = "expect")
+   )
+```
+
+
+```{r}
+deviations <- as.data.frame(y)
+colnames(deviations) = (paste("cell_", 1:ncol(deviations)))
+rownames(deviations) = paste("motif_", 1:nrow(deviations))
+
+
+p2 <- ComplexHeatmap::pheatmap(
+   deviations,
+   cluster_rows = F, cluster_cols = F,
+   display_numbers = T, 
+   fontsize_number = 12, 
+   column_names_side = c("top"),
+   row_names_side = c("left"),
+   angle_col = c("0"),
+   circlize::colorRamp2(c(0, max(deviations)), c("yellow", "red"), transparency = 0.5),
+   column_title = "Foreground deviations",
+   heatmap_legend_param = list(title = "deviation")
+   )
+```
+
+
+```#{r}
+proj <- loadArchRProject("12_Ricards_peaks_ChromVar/")
+peaks <- getMatrixFromProject(proj, useMatrix = "PeakMatrix", binarize = TRUE)
+peak_mat <- t(assays(peaks)[[1]]) # element of cells * peaks
+
+# get the sum of reads for a peak j across all cells, length = number of peaks
+total_read_per_peak = colSums(peak_mat)
+# get the sum of reads for a cell i across all peaks, length = number of cells
+total_read_per_cell = rowSums(peak_mat)
+# get the total accessbility across all cells and peaks
+total_reads = sum(peak_mat)
+
+expect = total_read_per_peak/total_reads %o% t(total_read_per_cell)
+
+
+expect = outer(total_read_per_peak[1:20]/total_reads, total_read_per_cell[1:10], "*")
+```
+
+
+```#{r}
+library(reticulate)
+```
+
+```#{python}
+import numpy as np
+
+```
+
+
+## 2. Compute background accessibility deviations 
+
+Since we epect a bias in peaks depending on their GC content and average accessibility (due to Tn5 insertion bias) we want to correct this raw accessibility deviation which we computed above for the bias. 
+
+For this purpose, we smaple background peak sets for each motif. These background peak sets match the set of peaks with the motif annotations. 
+
+The background peakset $B \in \mathbb{R}^{J * J'}$ has entries $b_{jj'} = 1$ if peak
+$j$ has peak $j'$ as a background peak and $0$ otherwise. $MxB \in \mathbb{R}^{K*J'}$ contains motif matches for the background peaks $j'$.
+
+$Y' = \frac{(MxB)x X^T - (MxB)xE^T}{M x E^T}$
+
+The background deviations is computed for several iterations (50 by default) 
+and then used to compute a bias-corrected deviation.
+
+
+## 3. Compute bias-corrected deviations and z-scores
+
+$Y - mean(Y') = Y - \frac{1}{N} \sum_{k = 1}{y_{ki}}$,
+with $N$ being the total
+number of cells. 
+
+Likewise we can now compute a bias-corrected z-score:
+
+$\frac{Y - mean(Y')}{sd(Y')}$. This deviation z-score will be high if the 
+difference in the number of fragmetns mapping to peaks with motif $k$ is high 
+compared to the expected number of fragments mapping to a peak. 
+
+
+
+# Using motif annotations obtained from deep learning model
+
+In this case we do not get a binary motif x peaks matrix $M$, but instead
+for each motif and peak a probability. Instead of a sum of reads mapping to a peak with motif $k$ we would then get a weighted sum of reads mapping to a peak
+with motif $k$. The rest of the computations stays the same.
+
+Below is a visualization of this new matrix $M$:
+
+```{r}
+
+# motif annotation matirix
+m <- tibble::tribble(
+  ~peak_1, ~peak_2, ~peak_3, ~peak_4, ~peak_5, ~peak_6, ~peak_7,
+  0.5, 0.01, 0.8, 0.02, 0.1, 0.2, 0.05,
+  0.2, 0.03, 0.05, 0.4, 0.5, 0.05, 0.09,
+  0.07, 0.25, 0.45, 0.05, 0.1, 0.15, 0.21,
+  0.01, 0.1, 0.19, 0.04, 0.5, 0.3, 0.45,
+) %>%
+  mutate(rownames = paste("motif_", 1:nrow(.))) %>%
+  column_to_rownames(var = "rownames") %>%
+  as.matrix()
+
+
+p1 <- ComplexHeatmap::pheatmap(
+   m, 
+   cluster_rows = F, cluster_cols = F,
+   display_numbers = T, 
+   fontsize_number = 12, 
+   column_names_side = c("top"),
+   row_names_side = c("left"),
+   angle_col = c("0"),
+   circlize::colorRamp2(c(0, max(m)), c("lightgreen", "darkgreen"), transparency = 0.5),
+   column_title = "Motif Annotations Matrix M, non-binary",
+   heatmap_legend_param = list(title = "motif in peak")
+   ) 
+
+```
+
+
+
+# Plot TFs
+
+## GATA Factors
+
+```{r}
+motifs <- c("Gata1", "Gata2", "Gata3", "Gata4", "Gata5", "Gata6")
+
+markerMotifs <- getFeatures(proj, select = paste(motifs, collapse="|"), 
+                            useMatrix = "MotifMatrix", )
+
+```
+
+
+
+```#{r}
+p <- plotEmbedding(
+    ArchRProj = proj, 
+    colorBy = "MotifMatrix", 
+    name = sort(markerMotifs), 
+    embedding = "UMAP",
+    imputeWeights = getImputeWeights(proj)
+)
+```
+
+```#{r, fig.width=15, fig.height=20}
+p2 <- lapply(p, function(x){
+    x + guides(color = FALSE, fill = FALSE) + 
+    theme_ArchR(baseSize = 6.5) +
+    theme(plot.margin = unit(c(0, 0, 0, 0), "cm")) +
+    theme(
+        axis.text.x=element_blank(), 
+        axis.ticks.x=element_blank(), 
+        axis.text.y=element_blank(), 
+        axis.ticks.y=element_blank()
+    )
+})
+do.call(cowplot::plot_grid, c(list(ncol = 3),p2))
+```
+
+```{r}
+motifs <- c("Pax2", "Foxd3")
+
+markerMotifs <- getFeatures(proj, select = paste(motifs, collapse="|"), 
+                            useMatrix = "MotifMatrix", )
+p <- plotEmbedding(
+    ArchRProj = proj, 
+    colorBy = "MotifMatrix", 
+    name = sort(markerMotifs), 
+    embedding = "UMAP",
+    imputeWeights = getImputeWeights(proj)
+)
+p
+```
+
+
+## Cardiomyocytes
+
+```{r}
+motifs <- c("Mef2c", "Mef2a", "Mef2d", "Mef2b", "Pknox2", "pknox1")
+
+markerMotifs <- getFeatures(proj, select = paste(motifs, collapse="|"), useMatrix = "MotifMatrix")
+
+```
+
+
+```#{r}
+p <- plotEmbedding(
+    ArchRProj = proj, 
+    colorBy = "MotifMatrix", 
+    name = sort(markerMotifs), 
+    embedding = "UMAP",
+    imputeWeights = getImputeWeights(proj)
+)
+```
+
+```#{r, fig.width=15, fig.height=20}
+p2 <- lapply(p, function(x){
+    x + guides(color = FALSE, fill = FALSE) + 
+    theme_ArchR(baseSize = 6.5) +
+    theme(plot.margin = unit(c(0, 0, 0, 0), "cm")) +
+    theme(
+        axis.text.x=element_blank(), 
+        axis.ticks.x=element_blank(), 
+        axis.text.y=element_blank(), 
+        axis.ticks.y=element_blank()
+    )
+})
+do.call(cowplot::plot_grid, c(list(ncol = 3),p2))
+```
+
+
+## Gut
+
+```{r}
+motifs <- c("Id3", "Id4", "Tcf3", "Tcf4")
+
+markerMotifs <- getFeatures(proj, select = paste(motifs, collapse="|"), useMatrix = "MotifMatrix")
+
+```
+
+```#{r}
+p <- plotEmbedding(
+    ArchRProj = proj, 
+    colorBy = "MotifMatrix", 
+    name = sort(markerMotifs), 
+    embedding = "UMAP",
+    imputeWeights = getImputeWeights(proj)
+)
+```
+
+```#{r, fig.width=15, fig.height=20}
+p2 <- lapply(p, function(x){
+    x + guides(color = FALSE, fill = FALSE) + 
+    theme_ArchR(baseSize = 6.5) +
+    theme(plot.margin = unit(c(0, 0, 0, 0), "cm")) +
+    theme(
+        axis.text.x=element_blank(), 
+        axis.ticks.x=element_blank(), 
+        axis.text.y=element_blank(), 
+        axis.ticks.y=element_blank()
+    )
+})
+do.call(cowplot::plot_grid, c(list(ncol = 3),p2))
+```

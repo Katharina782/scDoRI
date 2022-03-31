@@ -1,0 +1,117 @@
+---
+title: "log-normalization of peak matrix"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 5
+    code_folding: hide
+    toc_float: true
+    code_download: true
+    theme: cosmo
+    highlight: textmate
+---
+
+
+
+Ricards Peaks have a width of 600 bp!
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(cache = FALSE, autodep = TRUE, 
+                      collapse = TRUE, message = FALSE)
+knitr::opts_knit$set(root.dir = "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/")
+setwd("/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/")
+
+set.seed(1)
+```
+
+  
+```{r}
+## Load libraries
+
+
+suppressPackageStartupMessages({
+library(ArchR)
+library(rhdf5)
+library(tidyverse)
+library(reticulate)
+library(zellkonverter)
+library(Matrix)
+library(dichromat)
+library(SingleCellExperiment)
+#library(caret)
+h5disableFileLocking()})
+```
+
+```{r}
+proj <- loadArchRProject("12_Ricards_peaks_ChromVar/")
+
+peaks <- getMatrixFromProject(proj, useMatrix = "PeakMatrix", binarize = FALSE)
+```
+
+```{r}
+peak_mat <- assays(peaks)[[1]]
+rm(peaks)
+```
+
+
+Log-normalization
+
+```{r}
+lognorm_peak_mat <- t(t(peak_mat)/colSums(peak_mat))
+scale_factor <- 1e4
+pseuodocount <- 1
+gc(reset = TRUE)
+
+
+data.frame(total_activity = rowSums(lognorm_peak_mat)) %>%
+         ggplot(aes(x = (total_activity))) + geom_histogram(bins = 100) +
+  labs(x = "total accessibility across cells")
+
+
+lognorm_peak_mat@x <- log1p(lognorm_peak_mat@x * scale_factor)
+
+
+
+data.frame(total_activity = rowSums(lognorm_peak_mat)) %>%
+         ggplot(aes(x = (total_activity))) + geom_histogram(bins = 100) +
+  labs(x = "total accessibility across cells")
+```
+
+```{r}
+rm(peak_mat)
+rm(lognorm_peak_mat)
+gc(reset = TRUE)
+```
+
+
+```{r}
+bin_peaks <- getMatrixFromProject(proj, useMatrix = "PeakMatrix", binarize = TRUE)
+bin_peak_mat <- assays(bin_peaks)[[1]]
+
+```
+
+
+```{r}
+lognorm_peak_mat <- t(t(bin_peak_mat)/colSums(bin_peak_mat))
+scale_factor <- 1e4
+pseuodocount <- 1
+gc(reset = TRUE)
+
+
+data.frame(total_activity = rowSums(lognorm_peak_mat)) %>%
+         ggplot(aes(x = (total_activity))) + geom_histogram(bins = 100) +
+  labs(x = "total accessibility across cells")
+
+
+lognorm_peak_mat@x <- log1p(lognorm_peak_mat@x * scale_factor)
+
+
+
+data.frame(total_activity = rowSums(lognorm_peak_mat)) %>%
+         ggplot(aes(x = (total_activity))) + geom_histogram(bins = 100) +
+  labs(x = "total accessibility across cells")
+```
+
+
+
+

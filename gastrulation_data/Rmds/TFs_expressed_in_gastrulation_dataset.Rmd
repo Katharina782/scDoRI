@@ -1,0 +1,196 @@
+---
+title: "TF expression"
+output: html_document
+---
+
+```{r}
+library(tidyverse)
+library(zellkonverter)
+```
+
+
+```{r}
+mouse_tfs <- read.delim("mouse_tf.txt", header = FALSE)
+
+mouse_tfs %>% head
+```
+
+```{r}
+#get character vector of TFs
+mouse_tfs_list <- mouse_tfs$V2
+mouse_tfs_list %>% head
+length(mouse_tfs_list)
+```
+
+```{r}
+# read in gene expression data
+rna_object <- readH5AD("jupyter_notebooks/anndata_rna.h5ad")
+```
+
+```{r}
+rna_object
+```
+
+```{r}
+# extract the metadata from the object
+metadata <- as.data.frame(colData(rna_object))
+```
+
+```{r}
+expr <- assays(rna_object)[[1]]
+expr[1:5, 1:5]
+
+length(colSums(expr)[rownames(metadata)])
+```
+
+```{r, fig.width=8}
+metadata <- metadata %>% add_column(colSums(expr)[rownames(metadata)]) %>% #head
+  rename("nCounts" = "colSums(expr)[rownames(metadata)]")
+metadata %>% head
+
+metadata %>% ggplot() + geom_boxplot(aes(y = nCounts, x = sample))
+```
+
+
+
+
+```{r}
+
+# select only TF genes
+filt_expr <- expr[rownames(expr) %in% mouse_tfs_list, ]
+
+dim(filt_expr)
+``` 
+
+```{r}
+# Filter for TFs which have at least 10 reads mapping to them
+min(rowSums(filt_expr))
+
+#filt_expr <- filt_expr[rowSums(filt_expr) > 50, ]
+#dim(filt_expr)
+
+
+# check whether the TF is expressed in at least 5 cells
+bool <- filt_expr > 0
+filt_expr <- bool[rowSums(bool) > 10, ]
+dim(filt_expr)
+```
+
+```{r}
+write(rownames(filt_expr), "filtered_tfs.txt")
+```
+
+
+
+```{r}
+ggplot(as.data.frame(colSums(filt_expr)),aes(x = colSums(filt_expr))) + geom_histogram()
+```
+
+
+```{r}
+metadata <- metadata %>% add_column(colSums(filt_expr)[rownames(metadata)]) %>% #head
+  rename("nCounts_tfs" = "colSums(filt_expr)[rownames(metadata)]")
+metadata %>% head
+
+```
+
+
+Convert gene expression matrix to dataframe:
+
+```{r}
+mat <- expr[rownames(expr) %in% mouse_tfs_list, ]
+df <- as.data.frame(t(mat))
+
+df <- df %>% rownames_to_column("cell")
+```
+
+Combine metadata with gene expression dataframe
+
+```{r}
+tf_df <- inner_join(df, metadata, by = "cell") 
+```
+
+
+
+Get a list of TFs which are expressed in at least 10% of cell in at least one celltype
+
+```{r}
+# add total number of cells n and number of 10% of cells for each celltype
+tf_df <- tf_df %>% 
+  group_by(celltype) %>%
+  mutate(n = n()) %>% 
+  mutate("nCells_10" = round(n * 0.1)) %>%
+  ungroup()
+
+# have a look at the newly created columns
+colnames(tf_df) %>% tail()
+```
+
+```{r}
+# Have a look at the new dataframe
+tf_df$nCells_10 %>% head
+```
+
+
+
+
+```{r}
+tf_list <- list()
+
+# for each celltype get all counts for each gene
+for (i in unique(tf_df$celltype)) {
+  subset <- tf_df %>% filter(celltype == i)
+  # for each gene get the number of cells in which it is expressed (count > 0)
+  for (g in rownames(mat)) {
+    total_cells <- sum(subset[g] > 0)
+    if (total_cells >= subset$nCells_10[1]) {
+      # append this gene to a list
+      tf_list <- append(tf_list, g)
+    }
+  }
+}
+
+tf_list <- unlist(tf_list)
+length(unique(tf_list))
+
+# get all TFs which are expressed in at least 10% of at least one celltype
+tf_list_10 <- unique(tf_list)
+write(tf_list_10, "10_tfs")
+```
+
+
+Get a list of TFs which are expressed in at least 20% of cell in at least one celltype
+
+```{r}
+tf_df <- tf_df %>% group_by(celltype) %>% mutate(n = n()) %>% mutate("nCells_10" = round(n * 0.2)) %>% ungroup()
+colnames(tf_df) %>% tail()
+```
+
+```{r}
+tf_df$nCells_10 %>% head
+```
+
+
+
+
+```{r}
+tf_list <- list()
+
+for (i in unique(tf_df$celltype)) {
+  subset <- tf_df %>% filter(celltype == i)
+  for (g in rownames(mat)) {
+    total_cells <- sum(subset[g] > 0)
+    if (total_cells >= subset$nCells_10[1]) {
+      tf_list <- append(tf_list, g)
+    }
+  }
+}
+
+tf_list <- unlist(tf_list)
+length(unique(tf_list))
+tf_list_20 <- unique(tf_list)
+#write(tf_list_20, "20_tfs")
+```
+
+
+

@@ -1,0 +1,70 @@
+---
+title: "Adding Manus Motifs"
+output: html_document
+---
+
+
+```{r}
+library(ChromVar)
+library(Matrix)
+library(SummarizedExperiment)
+library(motifmatchr)
+library(BiocParallel)
+```
+
+https://greenleaflab.github.io/chromVAR/articles/Introduction.html#get-motifs-and-what-peaks-contain-motifs
+
+## Peaks
+
+This looks very similar to the peakset object from ArchR. 
+
+```{r}
+peakfile <- system.file("extdata/test_bed.txt", package = "chromVAR")
+peaks <- getPeaks(peakfile, sort_peaks = TRUE)
+peaks
+```
+
+## Counts
+
+This is equivalent to the peak matrix in ArchR.
+
+```{r}
+bamfile <- system.file("extdata/test_RG.bam", package = "chromVAR")
+fragment_counts <- getCounts(bamfile, 
+                             peaks, 
+                             paired =  TRUE, 
+                             by_rg = TRUE, 
+                             format = "bam", 
+                             colData = DataFrame(celltype = "GM"))
+
+fragment_counts
+mat <- assays(fragment_counts)[[1]]
+mat[1:5, 1:5]
+```
+
+# Example Data
+
+```{r}
+data(example_counts, package = "chromVAR")
+head(example_counts)
+```
+
+# GC content of peaks
+
+To determine background peaks we need to infer the GC content. The function
+requires as input a genome sequence.
+
+```{r}
+library(BSgenome.Hsapiens.UCSC.hg19)
+example_counts <- addGCBias(example_counts, 
+                            genome = BSgenome.Hsapiens.UCSC.hg19)
+head(rowData(example_counts))
+```
+
+
+
+```{r}
+motifs <- getJasparMotifs()
+motifs
+```
+

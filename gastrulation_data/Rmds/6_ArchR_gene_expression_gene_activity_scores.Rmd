@@ -1,0 +1,407 @@
+---
+title: "Gene expression and gene scores in ArchR"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 5
+    code_folding: hide
+    toc_float: true
+    code_download: true
+    theme: cosmo
+    highlight: textmate
+---
+
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(cache = FALSE, autodep = TRUE, 
+                      collapse = TRUE, message = FALSE)
+knitr::opts_knit$set(root.dir = "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/")
+setwd("/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/")
+
+set.seed(1)
+```
+
+  
+```{r}
+## Load libraries
+
+
+suppressPackageStartupMessages(library(ArchR))
+library(knitr)
+library(rhdf5)
+library(uwot)
+library(tidyverse)
+library(scater)
+library(zellkonverter)
+library(corrplot)
+library(Seurat)
+#library(caret)
+h5disableFileLocking()
+```
+  
+```{r}
+proj <- loadArchRProject("12_Ricards_peaks_ChromVar/")
+gene_scores <- getMatrixFromProject(proj, useMatrix = "GeneScoreMatrix")
+gene_score_mat <- assays(gene_scores)[[1]]
+rownames(gene_score_mat) <- rowData(gene_scores)$name
+gene_expr <- getMatrixFromProject(proj, useMatrix = "GeneExpressionMatrix")
+gene_expr_mat <- assays(gene_expr)[[1]]
+rownames(gene_expr_mat) <- rowData(gene_expr)$name
+
+print(paste0("The gene expression matrix has dimension: ",
+             paste(dim(gene_expr_mat), collapse=",")))
+
+print(paste0("The gene expression matrix has dimension: ",
+             paste(dim(gene_score_mat), collapse=",")))
+
+#subset gene score matrix
+gene_score_mat <- gene_score_mat[rownames(gene_score_mat) %in% rownames(gene_expr_mat),]
+```
+
+
+Marker genes for each celltype from Nature, 2019, Pijuan-Sala.
+
+```{r}
+marker_genes <- c("Lamb1", "Plat", "Sparc", "Elf5", "Ascl2", "Tfap2c", "Ttr",
+                  "Apoa2", "Apoe", "Cystm1", "Emb", "Spink1", "Amot", "Krt19",
+                  "Dkk1", "Grhl3", "Trp63", "Grhl2", "Foxg1", "Pax6", "Pax2",
+                  "En1", "Sox10", "Dlx2", "Foxd3", "Tfap2a", "Pax3", "Sox9",
+                  "Six3", "Hesx1", "Irx3", "Sox2", "Hoxb9", "Cdx4", "Epha5", 
+                  "Hes3", "Hba-a2", "Hba-a1", "Gypa", "Hbb-bh1", "Gata1", "Cited4",
+                  "Runx1", "Lmo2", "Cdh5", "Pecam1", "Anxa5", "Kdr", "Etv2", "Igf2",
+                  "Krt8", "Krt18", "Pmp22", "Ahnak", "Bmp4", "Tbx4", "Hoxa11", 
+                  "Hoxa10", "Tnnt2", "Myl4", "Nkx2-5", "Myl7", "Acta2", 
+                  "Smarcd3", "Tcf21", "Isl1", "Tbx6", "Dll1", "Aldh1a2", "Tcf15", 
+                  "Meox1", "Tbx1", "Gbx2", "Cdx1", "Hoxb1", "Hes7", "Cdx2", "Osr1", 
+                  "Mesp2", "Lefty2", "Mesp1", "Cer1", "Noto", "Chrd", "T", 
+                  "Foxa2", "Pax7", "Fgf8", "Lhx1", "Gsc", "Mixl1", "Otx2", "Hhex",
+                  "Dppa3", "Dnd1", "Ifitm3", "Nkx1-2", "Eomes", "Nanog", "Utf1", 
+                  "Epcam", "Pou5f1")
+```
+
+
+```{r}
+p <- plotEmbedding(
+    ArchRProj = proj, 
+    colorBy = "GeneExpressionMatrix", 
+    name = marker_genes, 
+    embedding = "UMAP",
+    quantCut = c(0.01, 0.95),
+    imputeWeights = NULL
+)
+
+p
+```
+
+
+```{r}
+p <- plotEmbedding(
+    ArchRProj = proj, 
+    colorBy = "GeneScoreMatrix", 
+    name = marker_genes, 
+    embedding = "UMAP",
+    quantCut = c(0.01, 0.95),
+    imputeWeights = getImputeWeights(proj)
+)
+
+p
+```
+
+
+### Visualize the gene activity scores
+
+```{r}
+heatmap(as.matrix(gene_score_mat[1:5, 1:5]))
+
+print(paste0("Minimum gene score: ", min(gene_score_mat)))
+print(paste0("Maximum gene score: ", max(gene_score_mat)))
+
+#print(paste0("Exemplary column sum: ", colSums(gene_score_mat[:,1]))
+```
+
+```{r}
+print(paste0("Number of genes in the gene activity score matrix: ", dim(gene_score_mat)[[1]]))
+```
+
+```{r  class.source = 'fold-show'}
+gene_score_mat[1:5, 1:5]
+```
+
+
+```{r}
+tibble(gene = rownames(gene_score_mat),
+          mean = Matrix::rowMeans(gene_score_mat),
+          var = MatrixGenerics::rowVars(gene_score_mat)) %>% 
+  mutate(log10_mean = log10(mean),
+         log10_var = log10(var)) %>% ggplot() +
+  geom_point(aes(x = log10_mean, y = log10_var)) +
+  labs(title = "Gene activity score from scATAC-seq")
+
+```
+
+
+### Visualize the raw gene expression counts
+
+```{r}
+print(paste0("Minimum gene score: ", min(gene_expr_mat)))
+print(paste0("Maximum gene score: ", max(gene_expr_mat)))
+
+```
+
+```{r}
+print(paste0("Number of genes in the gene activity score matrix: ", dim(gene_expr_mat)[[1]]))
+```
+
+```{r  class.source = 'fold-show'}
+gene_expr_mat[1:5, 1:5]
+```
+
+
+```{r}
+tibble(gene = rownames(gene_expr_mat),
+          mean = Matrix::rowMeans(gene_expr_mat),
+          var = MatrixGenerics::rowVars(gene_expr_mat)) %>% 
+  mutate(log10_mean = log10(mean),
+         log10_var = log10(var)) %>% ggplot() +
+  geom_point(aes(x = log10_mean, y = log10_var)) +
+  labs(title = "Gene expression raw counts")
+
+tibble(gene = rownames(gene_expr_mat),
+          mean = Matrix::rowMeans(gene_expr_mat),
+          var = MatrixGenerics::rowVars(gene_expr_mat)) %>%
+  ggplot() +
+  geom_point(aes(x = mean, y = var))
+
+```
+
+
+Normalize the RNA counts using log2 transformation:
+
+1. normalize by library size
+2. scale with factor 1000
+3. add pseudocount
+4. log transform 
+
+```{r}
+#scaling factor = 1000
+sc_factor <- 1e4
+
+# add pseudocount of 1
+lognorm_rna <- (log(Matrix::t(Matrix::t(gene_expr_mat) /
+                        Matrix::colSums(gene_expr_mat)) * sc_factor + 1))
+lognorm_rna <- as.matrix(lognorm_rna)
+
+print(paste0("Minimum normalized gene expression value: ", min(lognorm_rna)))
+print(paste0("Maximum normalized gene expression value: ", max(lognorm_rna)))
+#print(paste0("Exemplary column sum: ", colSums(lognorm_rna[:,1])))
+
+```
+
+
+
+```{r  class.source = 'fold-show'}
+lognorm_rna[1:5, 1:5]
+```
+
+
+```{r}
+tibble(gene = rownames(lognorm_rna),
+          mean = Matrix::rowMeans(lognorm_rna),
+          var = MatrixGenerics::rowVars(lognorm_rna)) %>% 
+  mutate(log10_mean = log10(mean),
+         log10_var = log10(var)) %>% ggplot() +
+  geom_point(aes(x = log10_mean, y = log10_var)) +
+  labs(title = "Gene expression log-normalized RNA expression")
+```
+
+```{r}
+data.frame(x = gene_score_mat[1,]) %>% ggplot(aes(x = x)) + geom_histogram(bins = 100) +
+  scale_y_log10() +
+  labs(title = "Gene scores", x = "Gene score" )
+
+data.frame(x = gene_expr_mat[1,]) %>% ggplot(aes(x = x)) + geom_histogram(bins = 100) +
+  scale_y_log10() +
+    labs(title = "Gene expression counts", x = "Gene expression counts" )
+
+
+data.frame(x = lognorm_rna[1,]) %>% ggplot(aes(x = x)) + geom_histogram(bins = 100) +
+  scale_y_log10() +
+    labs(title = "log-normalized gene expression", x = "Log-normalized gene expression" )
+
+```
+
+
+
+# Correlation between gene activity score and gene expression:
+
+## Create cell aggregates
+
+```{r}
+# randomly sample 5% of cells
+sample_frac <- .05
+
+# out of all cells in the gene expression matrix randomly sample 5% without replacement
+sampled_cells <- sample(1:ncol(gene_expr_mat), sample_frac * ncol(gene_expr_mat), replace = FALSE)
+print(paste0("Sampling ", length(sampled_cells), " cells."))
+```
+
+```{r}
+df <- as.data.frame(cbind(getCellColData(proj), getEmbedding(proj)) ) %>%
+  rename(c(umap1_100k_lsi = atac_LSI_100000.UMAP_Dimension_1, umap2_100k_lsi  = atac_LSI_100000.UMAP_Dimension_2))
+
+
+proj <- addCellColData(
+  ArchRProj = proj,
+  data = df$umap1_100k_lsi,
+  name = "umap1",
+  cells = rownames(df),
+  force = FALSE
+)
+
+proj <- addCellColData(
+  ArchRProj = proj,
+  data = df$umap2_100k_lsi,
+  name = "umap2",
+  cells = rownames(df),
+  force = FALSE
+)
+
+```
+
+
+
+```{r}
+ggplot() +
+  geom_point(aes(x = getCellColData(proj)$umap1, y = getCellColData(proj)$umap2,
+                 color = (seq(1, ncol(gene_expr_mat)) %in% sampled_cells)), size = .2) +
+  guides(color = guide_legend(override.aes = list(size = 2))) +
+  coord_equal() +
+  labs(x = "umap1", y = "umap2", title = "Randomly sampling cells")
+```
+
+## Add PCA
+
+```{r}
+#atac_seurat <- readRDS("atac_Seurat_object")
+rna_seurat <- readRDS("rna_Seurat_object")
+
+# get the cell embeddings
+cell_embeddings <- Embeddings(object = rna_seurat, reduction = "pca")#[1:5, 1:5]
+
+```
+
+
+
+```{r}
+# create nearest neighbor graph
+k <- 50
+
+# use only cells we also have in gene expr/score matrix and the first 30 PCs
+nn <- RANN::nn2(cell_embeddings[colnames(gene_expr_mat), 1:30], k = k)
+
+# get genes of interest, the top 2000 most highly variable features
+hvg <- rna_seurat@assays$originalexp@var.features
+
+# we are left with 1772 genes
+hvg <- hvg[hvg %in% rownames(gene_score_mat)]
+length(hvg)
+
+
+# initialize matrix to store aggregate values
+rna_score <- matrix(0, nrow = length(hvg), ncol = length(sampled_cells))
+atac_score <- matrix(0, nrow = length(hvg), ncol = length(sampled_cells))
+rownames(rna_score) <- hvg
+rownames(atac_score) <- hvg
+
+# make gene score matrix columns be same as gene expr
+reord_gene_scores <- gene_score_mat[, colnames(gene_expr_mat)]
+
+
+for(i in 1:length(sampled_cells)) {
+  # check progress
+  if (i %% 100 == 0) print(i)
+  
+  # get current cell
+  cell <- sampled_cells[i]
+  
+  # aggregate the rna score for one gene and all nearest neighbors of the first 
+  # cell in our aggregate group of cells
+  rna_score[hvg, i] <- sparseMatrixStats::rowMeans2(
+    gene_expr_mat[hvg, nn$nn.idx[cell, ]]
+  )
+  
+    # aggregate the atac score
+  atac_score[hvg,i] <- sparseMatrixStats::rowMeans2(
+    reord_gene_scores[hvg, nn$nn.idx[cell,]]
+    )
+}
+
+
+```
+
+
+```{r}
+comp_stats <- rbind(rna_score %>% set_rownames(paste0(hvg, "_#_rna_score")),
+                    atac_score %>% set_rownames(paste0(hvg, "_#_atac_score"))) %>% 
+  t() %>% 
+  as.matrix() %>% 
+  tibble::as_tibble() %>% 
+  mutate(cell_name = sampled_cells) %>% 
+  pivot_longer(cols = !cell_name, names_to = "name", values_to = "vals") %>%
+  separate(name, sep = "_#_", into= c("gene", "statistic")) %>% 
+  pivot_wider(names_from = statistic, values_from = vals)
+```
+
+```{r, fig.width=10, fig.height=10}
+n <- 10
+genes_oi <- hvg[1:n]
+comp_stats %>%
+  filter(gene %in% genes_oi) %>%
+  ggplot(aes(x = rna_score, y = atac_score)) +
+  geom_point(size=0.4, alpha=0.4) +
+  geom_smooth(formula = y ~ x, method = "lm", size=0.1) +
+  #ggpubr::stat_cor(aes(label = ..r.label..), method = "pearson", r.digits=2) +
+  facet_wrap(~ gene, scales="free") +
+  labs(x = "RNA Counts", y = "ATAC Gene Score")
+```
+
+
+```#{r}
+marker_genes <- c("Lamb1", "Plat", "Sparc", "Elf5", "Ascl2", "Tfap2c", "Ttr",
+                  "Apoa2", "Apoe", "Cystm1", "Emb", "Spink1", "Amot", "Krt19")
+```
+
+
+```#{r, fig.width=10, fig.height=15}
+plots <- map(marker_genes, function(n){
+plot <- tibble(gene_expr = lognorm_rna[n, ], 
+       gene_score = gene_score_mat[n, ]) %>% 
+  ggplot(aes( x = gene_expr,y = gene_score)) + geom_point() +
+    geom_smooth(formula = y ~ x, method = "lm", size=0.1) 
+
+})
+
+
+gridExtra::grid.arrange(grobs = plots, ncol = 3)
+
+test <- cor(rna_counts["Apoe", ], gene_score_mat["Lamb1", ])
+test
+```
+
+```{r}
+
+```
+
+
+
+```#{r}
+plot <- tibble(gene_expr = lognorm_rna["Lamb1", ], 
+       gene_score = gene_score_mat["Lamb1", ]) %>% 
+  ggplot(aes( x = gene_expr,y = gene_score)) + geom_point() +
+  geom_smooth(formula = y ~ x, method = "lm", size=0.1) 
+  #ggpubr::stat_cor(aes(label = ..r.label..), method = "pearson", r.digits=2)
+  
+plot
+```
+
