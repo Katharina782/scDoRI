@@ -1,6 +1,14 @@
 ---
 title: "Gene_activity_scores_ArchR"
-output: html_document
+output: 
+  html_document:
+    toc: true
+    toc_depth: 5
+    code_folding: hide
+    toc_float: true
+    code_download: true
+    theme: cosmo
+    highlight: textmate
 ---
 
 ```{r setup, include=FALSE}
@@ -13,8 +21,209 @@ set.seed(1)
 ```
 
 ```{r}
+suppressPackageStartupMessages({
 library(ArchR)
 library(tidyverse)
+library(SingleCellExperiment)
+library(zellkonverter)
+h5disableFileLocking()
+})
+```
+
+
+<details>
+<summary>ArchR Gene Activity Scores using gene body</summary>
+
+```#{r}
+#saveArchRProject(proj, "12_Copy2/")
+
+proj <- loadArchRProject("12_Copy2/")
+
+proj <- addKathiGeneScoreMatrix(
+  proj,
+  genes = getGenes(proj),
+  peaks = getPeakSet(proj),
+  geneModel = "exp(-abs(x)/5000) + exp(-1)",
+  matrixName = "GeneScoreMatrix",
+  extendUpstream = c(1000, 100000),
+  extendDownstream = c(1000, 100000),
+  #geneUpstream = 5000, #New Param
+  #geneDownstream = 0, #New Param
+  useGeneBoundaries = TRUE,
+  useTSS = FALSE, #New Param
+  extendTSS = FALSE,
+  tileSize = 500,
+  ceiling = 4,
+  geneScaleFactor = 5, #New Param
+  scaleTo = 10000,
+  excludeChr = c("chrY", "chrM"),
+  blacklist = getBlacklist(proj),
+  threads = 1,
+  parallelParam = NULL,
+  subThreading = TRUE,
+  force = TRUE,
+  logFile = createLogFile(".addKathiGeneScoreMat"))
+
+
+scores <- getMatrixFromProject(proj, useMatrix = "GeneScoreMatrix")
+
+scores_mat <- assays(scores)[[1]]
+#rownames(scores_mat) <- rowData(scores)$name
+
+
+sce <- SingleCellExperiment(list(scores=scores_mat),
+                          rowData = as.data.frame(rowData(scores)),
+                          colData = as.data.frame(colnames(scores_mat)))
+
+writeH5AD(sce, "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/jupyter_notebooks/p2g_gene_activity_scores/archr_scores_gene_body_peak_based", X_name = "scores")
+
+```
+</details>
+
+<details>
+<summary>ArchR Gene Activity Scores using TSS, no gene body</summary>
+
+
+```#{r}
+#saveArchRProject(proj, "12_Copy1/")
+
+proj <- loadArchRProject("12_")
+
+proj <- addGeneScoreMatrix(
+  proj,
+  genes = getGenes(proj),
+  geneModel = "exp(-abs(x)/5000)",
+  matrixName = "GeneScoreMatrix",
+  extendUpstream = c(1000, 100000),
+  extendDownstream = c(1000, 100000),
+  #geneUpstream = 5000, #New Param
+  #geneDownstream = 0, #New Param
+  useGeneBoundaries = TRUE,
+  useTSS = TRUE, #New Param
+  extendTSS = FALSE,
+  tileSize = 500,
+  ceiling = 4,
+  geneScaleFactor = 5, #New Param
+  scaleTo = 10000,
+  excludeChr = c("chrY", "chrM"),
+  blacklist = getBlacklist(proj),
+  threads = 1,
+  parallelParam = NULL,
+  subThreading = TRUE,
+  force = TRUE,
+  logFile = createLogFile(".addGeneScoreMatrix"))
+
+
+scores <- getMatrixFromProject(proj, useMatrix = "GeneScoreMatrix")
+
+scores_mat <- assays(scores)[[1]]
+#rownames(scores_mat) <- rowData(scores)$name
+
+
+sce <- SingleCellExperiment(list(scores=scores_mat),
+                          rowData = as.data.frame(rowData(scores)),
+                          colData = as.data.frame(colnames(scores_mat)))
+
+writeH5AD(sce, "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/jupyter_notebooks/p2g_gene_activity_scores/archr_scores_tss", X_name = "scores")
+
+```
+</details>
+
+
+<details>
+<summary>ArchR gene activity scores computed using TSS, no gene body and PeakMatrix instead of TileMatrix</summary>
+
+```{r}
+proj <- loadArchRProject("12_Copy/")
+
+# proj <- addKathiGeneScoreMatrix(
+#   proj, 
+#   genes = getGenes(proj),
+#   peaks = getPeakSet(proj),
+#   geneModel = "exp(-abs(x)/5000)",
+#   matrixName = "GeneScoreMatrix",
+#   extendUpstream = c(1000, 100000),
+#   extendDownstream = c(1000, 100000),
+#   #geneUpstream = 5000, #New Param
+#   #geneDownstream = 0, #New Param
+#   useGeneBoundaries = TRUE,
+#   useTSS = TRUE, #New Param
+#   extendTSS = FALSE,
+#   tileSize = 500,
+#   ceiling = 4,
+#   geneScaleFactor = 5, #New Param
+#   scaleTo = 10000,
+#   excludeChr = c("chrY", "chrM"),
+#   blacklist = getBlacklist(proj),
+#   threads = 1,
+#   parallelParam = NULL,
+#   subThreading = TRUE,
+#   force = TRUE,
+#   logFile = createLogFile(".addKathiGeneScoreMat"))
+
+# scores <- getMatrixFromProject(proj, useMatrix = "GeneScoreMatrix")
+# 
+# scores_mat <- assays(scores)[[1]]
+# rownames(scores_mat) <- rowData(scores)$name
+# 
+# 
+# sce <- SingleCellExperiment(list(scores=scores_mat),
+#                           rowData = as.data.frame(rownames(scores_mat)),
+#                           colData = as.data.frame(colnames(scores_mat)))
+# 
+# writeH5AD(sce, "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/jupyter_notebooks/p2g_gene_activity_scores/archr_scores_peak_based", X_name = "scores")
+```
+
+
+<details>
+
+```{r}
+marker_genes <- c("Lamb1",  "Sparc", "Elf5", "Ascl2", "Tfap2c", "Ttr",
+                  "Apoa2", "Apoe", "Cystm1", "Emb", "Spink1",  "Krt19",
+                  "Dkk1", "Grhl3", "Trp63", "Grhl2",  "Pax6", "Pax2",
+                  "En1", "Foxd3", "Tfap2a", "Pax3", "Sox9",
+                  "Six3", "Hesx1", "Irx3", "Sox2", "Hoxb9", "Cdx4", 
+                  "Hes3", "Hba-a2", "Hba-a1",  "Hbb-bh1", "Gata1", "Cited4",
+                   "Cdh5", "Pecam1", "Anxa5", "Etv2", "Igf2",
+                  "Krt8", "Krt18", "Pmp22", "Ahnak", "Bmp4", "Tbx4", "Hoxa11", 
+                  "Hoxa10", "Tnnt2", "Myl4",  "Myl7", "Acta2", 
+                  "Smarcd3", "Tcf21", "Tbx6", "Dll1", "Aldh1a2", "Tcf15", 
+                  "Meox1", "Tbx1", "Gbx2", "Cdx1", "Hoxb1", "Hes7", "Osr1", 
+                  "Mesp2", "Lefty2", "Mesp1", "Cer1",  "Chrd", "T", 
+                  "Foxa2", "Pax7", "Fgf8", "Lhx1", "Gsc", "Mixl1", "Otx2", "Hhex",
+                   "Ifitm3", "Nkx1-2", "Eomes", "Nanog", "Utf1", 
+                  "Epcam", "Pou5f1")
+```
+
+
+```#{r}
+marker_genes <- c("Hes3", "Hba-a2", "Hba-a1",  "Hbb-bh1", "Gata1")
+
+addImputeWeights(proj, reducedDims = "atac_LSI_100000")
+
+p <- plotEmbedding(
+    ArchRProj = proj, 
+    colorBy = "GeneScoreMatrix", 
+    name = marker_genes, 
+    embedding = "UMAP",
+    quantCut = c(0.01, 0.95),
+    imputeWeights = getImputeWeights(proj)
+)
+
+
+plots <- lapply(p, function(x){
+    x + guides(color = FALSE, fill = FALSE) + 
+    theme_ArchR(baseSize = 6.5) +
+    theme(plot.margin = unit(c(0, 0, 0, 0), "cm")) +
+    theme(
+        axis.text.x=element_blank(), 
+        axis.ticks.x=element_blank(), 
+        axis.text.y=element_blank(), 
+        axis.ticks.y=element_blank()
+    )
+})
+
+do.call(cowplot::plot_grid, c(list(ncol = 3),plots))
 ```
 
 
@@ -102,400 +311,7 @@ logFile = NULL
 
 ```
 
-# Adapt using Peaks
 
-```{r}
-input = proj
-logFile = createLogFile("addGeneScoreMatrix")
-matrixName <- ArchR:::.isProtectedArray(matrixName, exclude = "GeneScoreMatrix")
-
-if(inherits(input, "ArchRProject")){
-  ArrowFiles <- getArrowFiles(input)
-  allCells <- rownames(getCellColData(input))
-  outDir <- getOutputDirectory(input)
-}else if(inherits(input, "character")){
-  outDir <- ""
-  ArrowFiles <- input
-  allCells <- NULL
-}else{
-  stop("Error Unrecognized Input!")
-}
-if(!all(file.exists(ArrowFiles))){
-  stop("Error Input Arrow Files do not all exist!")
-}
-
-if(inherits(mcols(genes)$symbol, "list") | inherits(mcols(genes)$symbol, "SimpleList")){
-  stop("Found a list in genes symbol! This is an incorrect format. Please correct your genes!")
-}
-
-#ArchR:::.startLogging(logFile = logFile)
-#ArchR:::.logThis(mget(names(formals()),sys.frame(sys.nframe())), "addGeneScoreMatrix Input-Parameters", logFile = logFile)
-
-#Valid GRanges
-genes <- ArchR:::.validGRanges(genes)
-peaks <- ArchR:::.validGRanges(peaks)
-```
-
-
-```{r}
-i = 1
-ArrowFile <- ArrowFiles[i]
-sampleName <- ArchR:::.sampleName(ArrowFile)
-
-if(is.null(tmpFile)){
-  tmpFile <- ArchR:::.tempfile(pattern = paste0("tmp-", ArchR:::.sampleName(ArrowFile)))
-}
-
-#Check
-o <- h5closeAll()
-#o <- ArchR:::.createArrowGroup(ArrowFile = ArrowFile, group = matrixName, force = force, logFile = logFile)
-
-# remove any chromosomes which we do not want to inlcude (X and Y in this case)
-geneRegions <- genes[BiocGenerics::which(seqnames(genes) %bcni% excludeChr)]
-peakRegions <- peaks[BiocGenerics::which(seqnames(peaks) %bcni% excludeChr)]
-print(paste0("Before filtering out the X and Y Chromosome we have ", length(genes), " genes, afterwards we have ", length(geneRegions), "."))
-geneRegions %>% head
-
-# add information on chromsome names to the GRanges object
-seqlevels(geneRegions) <- as.character(unique(seqnames(geneRegions)))
-geneRegions <- geneRegions[!is.na(mcols(geneRegions)$symbol)]
-print(paste0("After removing missing gene names, we are left with ", length(geneRegions), " genes"))
-seqlevels(peakRegions) <- as.character(unique(seqnames(peakRegions)))
-
-#Create Gene Regions Then Remove Strand Column
-if(useTSS){
-  ArchR:::.logMessage(paste0(sampleName, " .addGeneScoreMat useTSS = TRUE"))
-  distMethod <- "GenePromoter"
-  
-  geneRegions$geneStart <- start(resize(geneRegions, 1, "start"))
-  geneRegions$geneEnd <- start(resize(geneRegions, 1, "end"))
-  # in the ranges column we want to have the gene start coordinates
-  geneRegions <- resize(geneRegions, 1, "start")
-  
-  
-  peakRegions$peakStart <- start(resize(peakRegions, 1, "start"))
-  peakRegions$peakEnd <- end(resize(peakRegions, 1, "start"))
-  
-  # this will be ignored for now, since we only want to use the TSS as 1bp size
-  # if(extendTSS){
-  #   geneRegions <- extendGR(gr = geneRegions, upstream = geneUpstream, downstream = geneDownstream)
-  # }
-  
-  geneRegions$geneWeight <- geneScaleFactor
-  
-  
-# This will be ignored for now, since we do not want to use gene bodies, but only TSS
-}else{
-  ArchR:::.logMessage(paste0(sampleName, " .addGeneScoreMat useTSS = FALSE"))
-  distMethod <- "GeneBody"
-  geneRegions$geneStart <- start(resize(geneRegions, 1, "start"))
-  geneRegions$geneEnd <- start(resize(geneRegions, 1, "end"))
-  geneRegions <- extendGR(gr = geneRegions, upstream = geneUpstream, downstream = geneDownstream)
-  m <- 1 / width(geneRegions)
-  geneRegions$geneWeight <- 1 + m * (geneScaleFactor - 1) / (max(m) - min(m))
-}
-
-#ArchR:::.logDiffTime(sprintf("Computing Gene Scores using distance relative to %s! ", distMethod), tstart, logFile = logFile)
-
-#Add Gene Index For ArrowFile
-geneRegions <- sort(sortSeqlevels(geneRegions), ignore.strand = TRUE)
-peakRegions <- sort(sortSeqlevels(peakRegions), ignore.strand = TRUE)
-
-#ArchR:::.logThis(geneRegions, paste0(sampleName, " .addGeneScoreMat geneRegions"), logFile = logFile)
-
-
-# split geneRegions into a list of GRanges object, one for each chromosome 
-#and add indices for each chromosome
-geneRegions <- split(geneRegions, seqnames(geneRegions))
-geneRegions <- lapply(geneRegions, function(x){
-  mcols(x)$idx <- seq_along(x)
-  return(x)
-})
-
-peakRegions <- split(peakRegions, seqnames(peakRegions))
-peakRegions <- lapply(peakRegions, function(x){
-  mcols(x)$idx <- seq_along(x)
-  return(x)
-})
-
-
-
-# get peak names for the peak matrix
-peak_df <- ArchR:::.getFeatureDF(ArrowFile, subGroup = "PeakMatrix")
-peak_df <- peak_df %>% as.data.frame() %>%
-  unite("rownames", seqnames, start, sep = ":", remove = FALSE) %>% 
-  unite("rownames", rownames, end, sep = "-", remove = FALSE)
-
-
-#Blacklist Split
-if(!is.null(blacklist)){
-  if(length(blacklist) > 0){
-    # create a list of length of number of chromosomes
-    # each element of the list contains the GRanges for the corresponding chromosome only
-    blacklist <- split(blacklist, seqnames(blacklist))
-  }
-}
-
-#Get all cell ids before constructing matrix
-if(is.null(cellNames)){
-  cellNames <- ArchR:::.availableCells(ArrowFile)
-}
-
-if(!is.null(allCells)){
-  cellNames <- cellNames[cellNames %in% allCells]
-}
-
-tstart <- Sys.time()
-```
-
-
-```{r}
-
-  #########################################################################################################
-  #First we will write gene scores to a temporary path! rhdf5 delete doesnt actually delete the memory!
-  #########################################################################################################
-totalGS <- ArchR:::.safelapply(seq_along(geneRegions), function(z){ # we loop over the z chromosomes here
-  # geneRegions is a list with one Granges object for each chromosome
-
-  totalGSz <- tryCatch({
-
-    ArchR:::.logDiffTime(sprintf("Creating Temp GeneScoreMatrix for %s, Chr (%s of %s)!", sampleName, z, length(geneRegions)), 
-      tstart, verbose = FALSE, logFile = logFile)
-
-    #Get Gene Starts
-    # extract Granges for chromosome z
-    geneRegionz <- geneRegions[[z]]
-    # order the entire GRanges object according to index 
-    geneRegionz <- geneRegionz[order(geneRegionz$idx)]
-    # get the chromosome information for this gene Region
-    chrz <- paste0(unique(seqnames(geneRegionz)))
-    
-    peakRegionz <- peakRegions[[z]]
-    peakRegionz <- peakRegionz[order(peakRegionz$idx)]
-    chrp <- paste0(unique(seqnames(peakRegionz)))
-    stopifnot(chrz == chrp)
-    
-    # get peak matrix
-    peak_mat <- ArchR:::.getMatFromArrow(ArrowFile, binarize = FALSE, cellNames = cellNames, useMatrix = "PeakMatrix")
-    # set rownames for the peak matrix
-    rownames(peak_mat) <- peak_df$rownames
-    # get peak matrix for cellnames 
-    subset_peak_mat <- peak_mat[rownames(peak_mat) %in% names(peakRegionz), ]
-    stopifnot(max(subset_peak_mat <= 4))
-    
-    
-    mcols(peakRegionz)$middle <- start(peakRegionz) + width(peakRegionz)/2
-    uniquePeaks <- sort(unique(peakRegionz$middle))
-    
-    rm(peak_mat)
-    gc()
-    
-    
-    #Clean Memory
-    rm(uniqIns, fragSt, fragEd, fragBC)
-    gc() 
-
-    #Time to Overlap Gene Windows
-    
-    
-    #### maybe for later
-    if(useGeneBoundaries){
-
-      geneStartz <- start(resize(geneRegionz, 1, "start"))
-      geneEndz <- start(resize(geneRegionz, 1, "end"))
-
-      pminGene <- pmin(geneStartz, geneEndz)
-      pmaxGene <- pmax(geneStartz, geneEndz)
-
-      idxMinus <- BiocGenerics::which(strand(geneRegionz) != "-")
-  
-      pReverse <- rep(max(extendDownstream), length(pminGene))
-      pReverse[idxMinus] <- rep(max(extendUpstream), length(idxMinus))
-
-      pReverseMin <- rep(min(extendDownstream), length(pminGene))
-      pReverseMin[idxMinus] <- rep(min(extendUpstream), length(idxMinus))
-
-      pForward <- rep(max(extendUpstream), length(pminGene))
-      pForward[idxMinus] <- rep(max(extendDownstream), length(idxMinus))      
-
-      pForwardMin <- rep(min(extendUpstream), length(pminGene))
-      pForwardMin[idxMinus] <- rep(min(extendDownstream), length(idxMinus))      
-
-      ################################################################
-      #We will test when genes pass by another gene promoter
-      ################################################################
-
-      #Start of Range is based on the max observed gene ranged <- direction
-      s <- pmax(
-        c(1, pmaxGene[-length(pmaxGene)] + tileSize), 
-        pminGene - pReverse
-      )
-      s <- pmin(pminGene - pReverseMin, s)
-
-      #End of Range is based on the max observed gene ranged -> direction
-      e <- pmin(
-          c(pminGene[-1] - tileSize, pmaxGene[length(pmaxGene)] + pForward[length(pmaxGene)]), 
-          pmaxGene + pForward
-        )
-      e <- pmax(pmaxGene + pForwardMin, e)
-
-      extendedGeneRegion <- IRanges(start = s, end = e)
-
-      idx1 <- which(pminGene - pReverseMin < start(extendedGeneRegion))
-      if(length(idx1) > 0){
-        stop("Error in gene boundaries minError")
-      }
-
-      idx2 <- which(pmaxGene + pForwardMin > end(extendedGeneRegion))
-      if(length(idx2) > 0){
-        stop("Error in gene boundaries maxError")
-      }
-     
-     rm(s, e, pReverse, pReverseMin, pForward, pForwardMin, geneStartz, geneEndz, pminGene, pmaxGene)
-     
-     
-     ###### interesting for me
-    }else{ 
-      
-      # first we extend the gene region -> IRanges object, which contains start 
-      # and end of the 200,000 bp gene regions/windows (+/- 100,000 from TSS) 
-      extendedGeneRegion <- ranges(suppressWarnings(extendGR(geneRegionz, upstream = max(extendUpstream), downstream = max(extendDownstream))))
-
-    }
-    
-    # Here I would like to use peaks which overlap instead of tiles
-    # each row of tmp contains index of GeneRegion and the index of Tiles with 
-    # which it overlaps
-    # convert peakRegionz to IRanges object as well
-    tmp <- suppressWarnings(findOverlaps(extendedGeneRegion, ranges(peakRegionz)))
-    
-    print(paste0("In total there are ", subjectLength(tmp), " overlapping with gene regions found on this chromosome"))
-    print(paste0("The total number of peaks found on this chromosome is ", length(peakRegionz)))
-    print(tmp %>% as.data.frame() %>% 
-      group_by(queryHits) %>% # gene region
-      summarize(n = n()) %>% # get number of peaks overlapping with a gene region
-      ggplot() + geom_bar(aes(x = n)) +
-      labs(title = "number of peaks per gene region of size +/- 100kb from TSS", x = "number of peaks"))
-    
-    # by extracting the indices of genes and tiles which overlap and computing 
-    # the distances between them we get for each match the distance between gene and tile
-    x <- distance(ranges(geneRegionz)[queryHits(tmp)], ranges(peakRegionz)[subjectHits(tmp)])
-    
-    print(ggplot() + geom_histogram(aes(x = x), bins = 500) + 
-      labs(title = "Distribution of absolute distances between genes and tiles within a gene region",
-           x = "distance"))
-    
-
-    #Determine Sign for Distance relative to strand (Directionality determined based on dist from gene start)
-    # negative distance meaning  upstrea, positive distance downstream of gene
-    
-    # get Minus strand coordinates
-    isMinus <- BiocGenerics::which(strand(geneRegionz) == "-")
-    # subtract the gene start coordinate from the tile start coordinate -> relative distances
-    signDist <- sign(start(ranges(peakRegionz))[subjectHits(tmp)] - 
-                       start(resize(geneRegionz,1,"start"))[queryHits(tmp)])
-    # convert the direction of distance for all distances corresponding to the negative strand
-    signDist[isMinus] <- signDist[isMinus] * -1
-
-    #Correct the orientation for the distance!
-    # x contains absolute distances, but we want to give direction to distances
-    x <- x * signDist
-    print(ggplot() + geom_histogram(aes(x = x), bins = 500) + 
-      labs(title = "Distribution of relative distances between genes and tiles within a gene region",
-           x = "relative distance to TSS"))
-    
-    #Evaluate  Input Model -> compute distance weights
-    x <- eval(parse(text=geneModel))
-    print(ggplot() + geom_histogram(aes(x = x), bins = 500) + 
-      labs(title = "Distribution of distance weights",
-           x = "distance weight"))
-    print(ggplot() + geom_histogram(aes(x = x), bins = 500) + 
-      labs(title = "Distribution of distance weights",
-           x = "distance weight", y = "log10(count)") + scale_y_log10())
-    
-    print("distanc weights ")
-    x %>% head
-
-    #Get Gene Weights Related to Gene Width, in our case simply multiply 
-    # everything by 5, because we do not use the size of the gene
-    x <- x * mcols(geneRegionz)$geneWeight[queryHits(tmp)]
-    
-    print("Distance weights scaled by gene weight, which is constant in our case: ")
-    x %>% head
-
-    #Remove Blacklisted Tiles!
-    if(!is.null(blacklist)){
-      if(length(blacklist) > 0){
-        blacklistz <- blacklist[[chrz]]
-        if(is.null(blacklistz) | length(blacklistz) > 0){
-          tilesBlacklist <- 1 * (!overlapsAny(ranges(peakRegionz), ranges(blacklistz)))
-          if(sum(tilesBlacklist == 0) > 0){
-            x <- x * tilesBlacklist[subjectHits(tmp)] #Multiply Such That All Blacklisted Tiles weight is now 0!
-          }
-        }
-      }
-    }
-    
-
-    #Creating Sparse Matrix
-    # this is genes x peaks, with distance weights 
-    tmp <- Matrix::sparseMatrix(
-      i = queryHits(tmp), 
-      j = subjectHits(tmp), 
-      x = x, 
-      dims = c(length(geneRegionz), nrow(subset_peak_mat))
-    )
-
-    # Number of peaks for each gene
-    print(ggplot() + geom_histogram(aes(x = rowSums(tmp)), bins = 200) +
-      labs(title = "Sum of distance weights for each gene",
-           x = "total distance weights per gene")) #+ scale_y_log10()
-    
-    # Number of genes for each peak
-    print(ggplot() + geom_histogram(aes(x = colSums(tmp)), bins = 200) +
-      labs(title = "Sum of distance weights for each peak",
-           x = "total distance weights per peak"))
-    
-    
-    #Calculate Gene Scores
-    matGS <- tmp %*% subset_peak_mat
-    colnames(matGS) <- cellNames
-
-    totalGSz <- Matrix::colSums(matGS)
-    print(paste0("For chromosome ", chrz, " there are ", length(totalGSz), " cells, meaning that there will be as many total gene activity scores."))
-    print(ggplot() + geom_histogram(aes(x = totalGSz), bins = 500) +
-      labs(title = "Total Gene activity in each cell", x = "total gene activity"))
-
-    #Save tmp file
-    .safeSaveRDS(matGS, file = paste0(tmpFile, "-", chrz, ".rds"), compress = FALSE)
-
-    #Clean Memory
-    rm(isMinus, signDist, extendedGeneRegion, uniqueTiles)
-    rm(matGS, tmp)
-    gc()
-
-    totalGSz
- 
-  }, error = function(e){
-
-    errorList <- list(
-      ArrowFile = ArrowFile,
-      geneRegions = geneRegions,
-      blacklist = blacklist,
-      chr = chrz,
-      totalGSz = if(exists("totalGSz", inherits = FALSE)) totalGSz else "totalGSz",
-      matGS = if(exists("matGS", inherits = FALSE)) matGS else "matGS"
-    )
-
-   # ArchR:::.logError(e, fn = "ArchR:::.addGeneScoreMat TmpGS", info = sampleName, errorList = errorList, logFile = logFile)
-
-  })
-
-  totalGSz
-
-})#, threads = subThreads) %>% Reduce("+", .)
-
-```
 
 
 
@@ -1007,7 +823,7 @@ totalGS <- ArchR:::.safelapply(seq_along(geneRegions), function(z){ # we loop ov
            x = "distance weight"))
     print(ggplot() + geom_histogram(aes(x = x), bins = 500) + 
       labs(title = "Distribution of distance weights",
-           x = "distance weight", y = log10(count)))
+           x = "distance weight", y = "log10(count))"))
     
     print("Real distances: ")
     x %>% head
@@ -1187,3 +1003,441 @@ return(ArrowFile)
 }
 ```
 
+
+```{r}
+i = 1
+ArrowFiles =  getArrowFiles(proj)
+genes = getGenes(proj)
+peaks = getPeakSet(proj)
+geneModel = "exp(-abs(x)/5000)"
+matrixName = "GeneScoreMatrix"
+extendUpstream = c(1000, 100000)
+extendDownstream = c(1000, 100000)
+geneUpstream = 5000 #New Param
+geneDownstream = 0 #New Param
+useGeneBoundaries = TRUE
+useTSS = FALSE #New Param
+extendTSS = FALSE
+tileSize = 500
+ceiling = 4
+geneScaleFactor = 5 #New Param
+scaleTo = 10000
+excludeChr = c("chrY","chrM")
+blacklist = getBlacklist(proj)
+cellNames = NULL
+allCells = NULL
+force = FALSE
+tmpFile = NULL
+subThreads = 1
+tstart = NULL
+logFile = NULL
+```
+
+# Adapt using Peaks
+
+```{r}
+input = proj
+logFile = createLogFile("addGeneScoreMatrix")
+matrixName <- ArchR:::.isProtectedArray(matrixName, exclude = "GeneScoreMatrix")
+
+if(inherits(input, "ArchRProject")){
+  ArrowFiles <- getArrowFiles(input)
+  allCells <- rownames(getCellColData(input))
+  outDir <- getOutputDirectory(input)
+}else if(inherits(input, "character")){
+  outDir <- ""
+  ArrowFiles <- input
+  allCells <- NULL
+}else{
+  stop("Error Unrecognized Input!")
+}
+if(!all(file.exists(ArrowFiles))){
+  stop("Error Input Arrow Files do not all exist!")
+}
+
+if(inherits(mcols(genes)$symbol, "list") | inherits(mcols(genes)$symbol, "SimpleList")){
+  stop("Found a list in genes symbol! This is an incorrect format. Please correct your genes!")
+}
+
+#ArchR:::.startLogging(logFile = logFile)
+#ArchR:::.logThis(mget(names(formals()),sys.frame(sys.nframe())), "addGeneScoreMatrix Input-Parameters", logFile = logFile)
+
+#Valid GRanges
+genes <- ArchR:::.validGRanges(genes)
+peaks <- ArchR:::.validGRanges(peaks)
+```
+
+
+```{r}
+i = 1
+ArrowFile <- ArrowFiles[i]
+sampleName <- ArchR:::.sampleName(ArrowFile)
+
+if(is.null(tmpFile)){
+  tmpFile <- ArchR:::.tempfile(pattern = paste0("tmp-", ArchR:::.sampleName(ArrowFile)))
+}
+
+#Check
+o <- h5closeAll()
+#o <- ArchR:::.createArrowGroup(ArrowFile = ArrowFile, group = matrixName, force = force, logFile = logFile)
+
+# remove any chromosomes which we do not want to inlcude (X and Y in this case)
+geneRegions <- genes[BiocGenerics::which(seqnames(genes) %bcni% excludeChr)]
+peakRegions <- peaks[BiocGenerics::which(seqnames(peaks) %bcni% excludeChr)]
+print(paste0("Before filtering out the X and Y Chromosome we have ", length(genes), " genes, afterwards we have ", length(geneRegions), "."))
+geneRegions %>% head
+
+# add information on chromsome names to the GRanges object
+seqlevels(geneRegions) <- as.character(unique(seqnames(geneRegions)))
+geneRegions <- geneRegions[!is.na(mcols(geneRegions)$symbol)]
+print(paste0("After removing missing gene names, we are left with ", length(geneRegions), " genes"))
+seqlevels(peakRegions) <- as.character(unique(seqnames(peakRegions)))
+
+#Create Gene Regions Then Remove Strand Column
+if(useTSS){
+  ArchR:::.logMessage(paste0(sampleName, " .addGeneScoreMat useTSS = TRUE"))
+  distMethod <- "GenePromoter"
+  
+  geneRegions$geneStart <- start(resize(geneRegions, 1, "start"))
+  geneRegions$geneEnd <- start(resize(geneRegions, 1, "end"))
+  # in the ranges column we want to have the gene start coordinates
+  geneRegions <- resize(geneRegions, 1, "start")
+  
+  
+  peakRegions$peakStart <- start(resize(peakRegions, 1, "start"))
+  peakRegions$peakEnd <- end(resize(peakRegions, 1, "start"))
+  
+  # this will be ignored for now, since we only want to use the TSS as 1bp size
+  # if(extendTSS){
+  #   geneRegions <- extendGR(gr = geneRegions, upstream = geneUpstream, downstream = geneDownstream)
+  # }
+  
+  geneRegions$geneWeight <- geneScaleFactor
+  
+  
+# This will be ignored for now, since we do not want to use gene bodies, but only TSS
+}else{
+  ArchR:::.logMessage(paste0(sampleName, " .addGeneScoreMat useTSS = FALSE"))
+  distMethod <- "GeneBody"
+  geneRegions$geneStart <- start(resize(geneRegions, 1, "start"))
+  geneRegions$geneEnd <- start(resize(geneRegions, 1, "end"))
+  geneRegions <- extendGR(gr = geneRegions, upstream = geneUpstream, downstream = geneDownstream)
+  m <- 1 / width(geneRegions)
+  geneRegions$geneWeight <- 1 + m * (geneScaleFactor - 1) / (max(m) - min(m))
+  
+  peakRegions$peakStart <- start(resize(peakRegions, 1, "start"))
+  peakRegions$peakEnd <- end(resize(peakRegions, 1, "start"))
+}
+
+#ArchR:::.logDiffTime(sprintf("Computing Gene Scores using distance relative to %s! ", distMethod), tstart, logFile = logFile)
+
+#Add Gene Index For ArrowFile
+geneRegions <- sort(sortSeqlevels(geneRegions), ignore.strand = TRUE)
+peakRegions <- sort(sortSeqlevels(peakRegions), ignore.strand = TRUE)
+
+#ArchR:::.logThis(geneRegions, paste0(sampleName, " .addGeneScoreMat geneRegions"), logFile = logFile)
+
+
+# split geneRegions into a list of GRanges object, one for each chromosome 
+#and add indices for each chromosome
+geneRegions <- split(geneRegions, seqnames(geneRegions))
+geneRegions <- lapply(geneRegions, function(x){
+  mcols(x)$idx <- seq_along(x)
+  return(x)
+})
+
+peakRegions <- split(peakRegions, seqnames(peakRegions))
+peakRegions <- lapply(peakRegions, function(x){
+  mcols(x)$idx <- seq_along(x)
+  return(x)
+})
+
+
+
+# get peak names for the peak matrix
+peak_df <- ArchR:::.getFeatureDF(ArrowFile, subGroup = "PeakMatrix")
+peak_df <- peak_df %>% as.data.frame() %>%
+  unite("rownames", seqnames, start, sep = ":", remove = FALSE) %>% 
+  unite("rownames", rownames, end, sep = "-", remove = FALSE)
+
+
+#Blacklist Split
+if(!is.null(blacklist)){
+  if(length(blacklist) > 0){
+    # create a list of length of number of chromosomes
+    # each element of the list contains the GRanges for the corresponding chromosome only
+    blacklist <- split(blacklist, seqnames(blacklist))
+  }
+}
+
+#Get all cell ids before constructing matrix
+if(is.null(cellNames)){
+  cellNames <- ArchR:::.availableCells(ArrowFile)
+}
+
+if(!is.null(allCells)){
+  cellNames <- cellNames[cellNames %in% allCells]
+}
+
+tstart <- Sys.time()
+```
+
+
+
+```{r}
+
+  #########################################################################################################
+  #First we will write gene scores to a temporary path! rhdf5 delete doesnt actually delete the memory!
+  #########################################################################################################
+totalGS <- ArchR:::.safelapply(seq_along(geneRegions), function(z){ # we loop over the z chromosomes here
+  # geneRegions is a list with one Granges object for each chromosome
+
+  totalGSz <- tryCatch({
+
+    ArchR:::.logDiffTime(sprintf("Creating Temp GeneScoreMatrix for %s, Chr (%s of %s)!", sampleName, z, length(geneRegions)), 
+      tstart, verbose = FALSE, logFile = logFile)
+
+    #Get Gene Starts
+    # extract Granges for chromosome z
+    geneRegionz <- geneRegions[[z]]
+    # order the entire GRanges object according to index 
+    geneRegionz <- geneRegionz[order(geneRegionz$idx)]
+    # get the chromosome information for this gene Region
+    chrz <- paste0(unique(seqnames(geneRegionz)))
+    
+    peakRegionz <- peakRegions[[z]]
+    peakRegionz <- peakRegionz[order(peakRegionz$idx)]
+    chrp <- paste0(unique(seqnames(peakRegionz)))
+    stopifnot(chrz == chrp)
+    
+    # get peak matrix
+    peak_mat <- ArchR:::.getMatFromArrow(ArrowFile, binarize = FALSE, cellNames = cellNames, useMatrix = "PeakMatrix")
+    # set rownames for the peak matrix
+    rownames(peak_mat) <- peak_df$rownames
+    # get peak matrix for cellnames 
+    subset_peak_mat <- peak_mat[rownames(peak_mat) %in% names(peakRegionz), ]
+    #stopifnot(max(subset_peak_mat <= 4))
+    
+    
+    mcols(peakRegionz)$middle <- start(peakRegionz) + width(peakRegionz)/2
+    uniquePeaks <- sort(unique(peakRegionz$middle))
+    
+    rm(peak_mat)
+    gc()
+    
+    
+    #Clean Memory
+    #rm(uniqIns, fragSt, fragEd, fragBC)
+    gc() 
+
+    #Time to Overlap Gene Windows
+    
+    
+    #### maybe for later
+    if(useGeneBoundaries){
+
+      geneStartz <- start(resize(geneRegionz, 1, "start"))
+      geneEndz <- start(resize(geneRegionz, 1, "end"))
+
+      pminGene <- pmin(geneStartz, geneEndz)
+      pmaxGene <- pmax(geneStartz, geneEndz)
+
+      idxMinus <- BiocGenerics::which(strand(geneRegionz) != "-")
+  
+      pReverse <- rep(max(extendDownstream), length(pminGene))
+      pReverse[idxMinus] <- rep(max(extendUpstream), length(idxMinus))
+
+      pReverseMin <- rep(min(extendDownstream), length(pminGene))
+      pReverseMin[idxMinus] <- rep(min(extendUpstream), length(idxMinus))
+
+      pForward <- rep(max(extendUpstream), length(pminGene))
+      pForward[idxMinus] <- rep(max(extendDownstream), length(idxMinus))      
+
+      pForwardMin <- rep(min(extendUpstream), length(pminGene))
+      pForwardMin[idxMinus] <- rep(min(extendDownstream), length(idxMinus))      
+
+      ################################################################
+      #We will test when genes pass by another gene promoter
+      ################################################################
+
+      #Start of Range is based on the max observed gene ranged <- direction
+      s <- pmax(
+        c(1, pmaxGene[-length(pmaxGene)] + tileSize), 
+        pminGene - pReverse
+      )
+      s <- pmin(pminGene - pReverseMin, s)
+
+      #End of Range is based on the max observed gene ranged -> direction
+      e <- pmin(
+          c(pminGene[-1] - tileSize, pmaxGene[length(pmaxGene)] + pForward[length(pmaxGene)]), 
+          pmaxGene + pForward
+        )
+      e <- pmax(pmaxGene + pForwardMin, e)
+
+      extendedGeneRegion <- IRanges(start = s, end = e)
+
+      idx1 <- which(pminGene - pReverseMin < start(extendedGeneRegion))
+      if(length(idx1) > 0){
+        stop("Error in gene boundaries minError")
+      }
+
+      idx2 <- which(pmaxGene + pForwardMin > end(extendedGeneRegion))
+      if(length(idx2) > 0){
+        stop("Error in gene boundaries maxError")
+      }
+     
+     rm(s, e, pReverse, pReverseMin, pForward, pForwardMin, geneStartz, geneEndz, pminGene, pmaxGene)
+     
+     
+     ###### interesting for me
+    }else{ 
+      
+      # first we extend the gene region -> IRanges object, which contains start 
+      # and end of the 200,000 bp gene regions/windows (+/- 100,000 from TSS) 
+      extendedGeneRegion <- ranges(suppressWarnings(extendGR(geneRegionz, upstream = max(extendUpstream), downstream = max(extendDownstream))))
+
+    }
+    
+    # Here I would like to use peaks which overlap instead of tiles
+    # each row of tmp contains index of GeneRegion and the index of Tiles with 
+    # which it overlaps
+    # convert peakRegionz to IRanges object as well
+    tmp <- suppressWarnings(findOverlaps(extendedGeneRegion, ranges(peakRegionz)))
+    
+    print(paste0("In total there are ", 
+                 subjectLength(tmp), " peaks overlapping with gene regions found on this chromosome"))
+    print(paste0("The total number of peaks found on this chromosome is ", length(peakRegionz)))
+    
+    print(tmp %>% as.data.frame() %>% 
+      group_by(queryHits) %>% # gene region
+      summarize(n = n()) %>% # get number of peaks overlapping with a gene region
+      ggplot() + geom_bar(aes(x = n)) +
+      labs(title = "number of peaks per gene region of size +/- 100kb from TSS", x = "number of peaks"))
+    
+    # by extracting the indices of genes and tiles which overlap and computing 
+    # the distances between them we get for each match the distance between gene and tile
+    
+    # we want to compute the distance to the peak middle
+    peak_middle_region <- peakRegionz
+    start(peak_middle_region) = start(peak_middle_region) + floor(width(peak_middle_region) / 2)
+    
+    x <- distance(ranges(geneRegionz)[queryHits(tmp)], 
+                  ranges(resize(peakRegionz, width = 1))[subjectHits(tmp)])
+    
+    print(ggplot() + geom_histogram(aes(x = x), bins = 500) + 
+      labs(title = "Distribution of absolute distances between genes and tiles within a gene region",
+           x = "distance"))
+    
+
+    #Determine Sign for Distance relative to strand (Directionality determined based on dist from gene start)
+    # negative distance meaning  upstrea, positive distance downstream of gene
+    
+    # get Minus strand coordinates
+    isMinus <- BiocGenerics::which(strand(geneRegionz) == "-")
+    # subtract the gene start coordinate from the tile start coordinate -> relative distances
+    signDist <- sign(start(ranges(peakRegionz))[subjectHits(tmp)] - 
+                       start(resize(geneRegionz,1,"start"))[queryHits(tmp)])
+    # convert the direction of distance for all distances corresponding to the negative strand
+    signDist[isMinus] <- signDist[isMinus] * -1
+
+    #Correct the orientation for the distance!
+    # x contains absolute distances, but we want to give direction to distances
+    x <- x * signDist
+    
+    print(ggplot() + geom_histogram(aes(x = x), bins = 500) + 
+      labs(title = "Distribution of relative distances between genes and tiles within a gene region",
+           x = "relative distance to TSS"))
+    
+    #Evaluate  Input Model -> compute distance weights
+    x <- eval(parse(text=geneModel))
+    
+    print(ggplot() + geom_histogram(aes(x = x), bins = 500) + 
+      labs(title = "Distribution of distance weights",
+           x = "distance weight"))
+    print(ggplot() + geom_histogram(aes(x = x), bins = 500) + 
+      labs(title = "Distribution of distance weights",
+           x = "distance weight", y = "log10(count)") + scale_y_log10())
+    
+    print("distanc weights ")
+    x %>% head
+
+    #Get Gene Weights Related to Gene Width, in our case simply multiply 
+    # everything by 5, because we do not use the size of the gene
+    x <- x * mcols(geneRegionz)$geneWeight[queryHits(tmp)]
+    
+    print("Distance weights scaled by gene weight, which is constant in our case: ")
+    x %>% head
+
+    #Remove Blacklisted Tiles!
+    if(!is.null(blacklist)){
+      if(length(blacklist) > 0){
+        blacklistz <- blacklist[[chrz]]
+        if(is.null(blacklistz) | length(blacklistz) > 0){
+          tilesBlacklist <- 1 * (!overlapsAny(ranges(peakRegionz), ranges(blacklistz)))
+          if(sum(tilesBlacklist == 0) > 0){
+            x <- x * tilesBlacklist[subjectHits(tmp)] #Multiply Such That All Blacklisted Tiles weight is now 0!
+          }
+        }
+      }
+    }
+    
+
+    #Creating Sparse Matrix
+    # this is genes x peaks, with distance weights 
+    tmp <- Matrix::sparseMatrix(
+      i = queryHits(tmp), 
+      j = subjectHits(tmp), 
+      x = x, 
+      dims = c(length(geneRegionz), nrow(subset_peak_mat))
+    )
+
+    # Number of peaks for each gene
+    print(ggplot() + geom_histogram(aes(x = rowSums(tmp)), bins = 200) +
+      labs(title = "Sum of distance weights for each gene",
+           x = "total distance weights per gene")) #+ scale_y_log10()
+    
+    # Number of genes for each peak
+    print(ggplot() + geom_histogram(aes(x = colSums(tmp)), bins = 200) +
+      labs(title = "Sum of distance weights for each peak",
+           x = "total distance weights per peak"))
+    
+    
+    #Calculate Gene Scores
+    matGS <- tmp %*% subset_peak_mat
+    colnames(matGS) <- cellNames
+
+    totalGSz <- Matrix::colSums(matGS)
+    print(paste0("For chromosome ", chrz, " there are ", length(totalGSz), " cells, meaning that there will be as many total gene activity scores."))
+    print(ggplot() + geom_histogram(aes(x = totalGSz), bins = 500) +
+      labs(title = "Total Gene activity in each cell", x = "total gene activity"))
+
+    #Save tmp file
+    .safeSaveRDS(matGS, file = paste0(tmpFile, "-", chrz, ".rds"), compress = FALSE)
+
+    #Clean Memory
+    rm(isMinus, signDist, extendedGeneRegion, uniqueTiles)
+    rm(matGS, tmp)
+    gc()
+
+    totalGSz
+ 
+  }, error = function(e){
+
+    errorList <- list(
+      ArrowFile = ArrowFile,
+      geneRegions = geneRegions,
+      blacklist = blacklist,
+      chr = chrz,
+      totalGSz = if(exists("totalGSz", inherits = FALSE)) totalGSz else "totalGSz",
+      matGS = if(exists("matGS", inherits = FALSE)) matGS else "matGS"
+    )
+
+   # ArchR:::.logError(e, fn = "ArchR:::.addGeneScoreMat TmpGS", info = sampleName, errorList = errorList, logFile = logFile)
+
+  })
+
+  totalGSz
+
+})#, threads = subThreads) %>% Reduce("+", .)
+
+```

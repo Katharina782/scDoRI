@@ -66,8 +66,14 @@ Using ArchR I computed the peak-to-gene links on the entire chromosome. Then,
 I proceeded with positive links with a false discovery rate below 1e-04 and correlation 
 above 0.2.
 
-```#{r}
+```{r}
 proj <- loadArchRProject("12_Ricards_peaks_ChromVar/")
+
+```
+
+
+```#{r}
+#proj <- loadArchRProject("12_Ricards_peaks_ChromVar/")
 
 proj <- addPeak2GeneLinks(  ArchRProj = proj,
   reducedDims  = "atac_LSI_100000",
@@ -154,7 +160,7 @@ p2g_matrix_from_df <- function(p2g, metadata_p2g_rna, metadata_p2g_atac){
   rna_idx$idxRNA <- as.integer(rna_idx$idxRNA)
   
   # combine this with the p2g dataframe
-  p2g_idx <- left_join(rna_idx, p2g_idx, by = "idxRNA", copy = TRUE )
+  p2g_idx <- inner_join(rna_idx, p2g_idx, by = "idxRNA", copy = TRUE )
   
   # create p2g link matrix
   # create column and row indices for the unique peak and rna indices
@@ -177,6 +183,73 @@ p2g_matrix_from_df <- function(p2g, metadata_p2g_rna, metadata_p2g_atac){
   return(list(p2g_mat, p2g_idx))
 }
 ```
+
+
+```{r}
+p2g_matrix_from_df <- function(p2g, metadata_p2g_rna, metadata_p2g_atac){
+  # add chrosome identifiers to p2g dataframe
+  metadata_p2g_atac <- metadata_p2g_atac %>%  rownames_to_column("idxATAC") %>% 
+  group_by(seqnames) %>% 
+  # create idx per chromosome
+  mutate(idx = seq_along(seqnames)) %>% ungroup() %>% 
+  # create chr & index combination column, will be needed, since this is how we name peak matrix
+  tidyr::unite(chr_idx, seqnames, idx, remove = FALSE, sep = "_")
+  
+  
+  #fitler to get only the peaks which we have in the p2g links dataframe
+  atac_chr_idx <- metadata_p2g_atac %>% filter(idxATAC %in% p2g$idxATAC) %>%
+    select(idxATAC, chr_idx) 
+  
+  atac_chr_idx$idxATAC <- as.integer(atac_chr_idx$idxATAC)
+  
+  # now we can merge this with the p2g dataframe based on the idxATAC column
+  p2g_idx <- inner_join(atac_chr_idx, p2g, by = "idxATAC",copy = TRUE)
+  
+  # add gene names to p2g dataframe
+  # get gene names
+  rna_idx <- metadata_p2g_rna %>% rownames_to_column("idxRNA") %>% 
+    group_by(seqnames) %>% 
+    mutate(idx = seq_along(seqnames)) %>% ungroup() %>% 
+    tidyr::unite(chr_idx_rna, seqnames, idx, remove = FALSE, sep = "_") %>% 
+    filter(idxRNA %in% p2g_idx$idxRNA) %>% 
+    select(idxRNA, name, chr_idx_rna) %>% rename("gene" = name)
+  
+  rna_idx$idxRNA <- as.integer(rna_idx$idxRNA)
+  
+  # combine this with the p2g dataframe
+  p2g_idx <- inner_join(rna_idx, p2g_idx, by = "idxRNA", copy = TRUE)
+  
+  # create p2g link matrix
+  # create column and row indices for the unique peak and rna indices
+  p2g_idx$ColIndex <- match(p2g_idx$chr_idx, unique(p2g_idx$chr_idx))
+  p2g_idx$RowIndex <- match(p2g_idx$gene, unique(p2g_idx$gene))
+  
+  # create a sparse matrix with the correlation values
+  p2g_mat <- sparseMatrix(i = p2g_idx$RowIndex, 
+                          j = p2g_idx$ColIndex,
+                          x = p2g_idx$Correlation,
+                          dims = c(length(unique(p2g_idx$gene)),
+                                   length(unique(p2g_idx$chr_idx))),
+                          dimnames = list(unique(p2g_idx$gene), 
+                                          unique(p2g_idx$chr_idx)))
+  
+  print(paste0("The sparse matrix of correlations has dimensions: ", dim(p2g_mat)[[1]], " genes and ", dim(p2g_mat)[[2]], " peaks."))
+  print(paste0("Minimum value: ", min(p2g_mat)))
+  print(paste0("The maximum value: ", max(p2g_mat)))
+  
+  return(list(p2g_mat, p2g_idx))
+}
+```
+
+
+```#{r}
+p2g_pos <- p2g %>% as.data.frame() %>% filter(Correlation > 0)
+
+test_mat <- p2g_matrix_from_df(p2g_pos, metadata_p2g_rna, metadata_p2g_atac)
+
+mat <- test_mat[[1]]
+```
+
 
 <details>
 <summary>Creating p2g matrix for all links and for only positive links</summary>
@@ -372,13 +445,80 @@ Now we will use this z-score matrix to compute our gene activity scores:
 ```{r}
 proj <- loadArchRProject("12_Ricards_peaks_ChromVar/")
 # get peak matrix
-peaks <- getMatrixFromProject(proj, useMatrix = "PeakMatrix", binarize = FALSE)
+peaks <- getMatrixFromProject(proj, useMatrix = "PeakMatrix", binarize = TRUE)
 peak_mat <- assays(peaks)[[1]]
 peakset <- as_tibble(getPeakSet(proj))
 peakset <- peakset %>% unite(chr_idx, seqnames, idx, sep = "_", remove = FALSE)
 # use index to asssign rownames to the matrix
 rownames(peak_mat) <- peakset$chr_idx
 ```
+
+
+
+```{r}
+gene_activity_scores <- function(peak_mat, p2g_mat) {
+  peak_mat_subset <- peak_mat[colnames(p2g_mat), ]
+  # normalize the p2g matrix by the total number of peaks linked to each gene
+  p2g_mat <- p2g_mat / rowSums(p2g_mat)
+  print(paste0("normalized the p2g matrix"))
+  # Now we can compute a weighted sum of peak2gene correlations for each
+  # peak and gene
+  scores <- p2g_mat %*% peak_mat_subset
+  print(paste0("Computed weightes sum of peaks for each gene and cell"))
+  # create a dataframe for computing the linear model
+  linear_model_df <- data.frame(cell = colnames(scores),
+                               total_activity = colSums(scores),
+                               total_sites = colSums(peak_mat_subset))
+  # compute a linear model
+  activity_model <- stats::lm(log(total_activity) ~ log(total_sites),
+                            data = linear_model_df)
+  # extract the fitted model
+  linear_model_df$fitted_curve <- exp(as.vector(predict(activity_model,
+                                                         type = "response")))
+  # compute size factors from fitted model
+  size_factors <- mean(linear_model_df$fitted_curve) / linear_model_df$fitted_curve
+  # create diagonal matrix containing the size factors
+  size_factors_mat <- Matrix::Diagonal(x = size_factors)
+  row.names(size_factors_mat) <- linear_model_df$cell
+  # normalize by library depth size factors
+  norm_scores <- Matrix::t(size_factors_mat %*% Matrix::t(scores))
+  print(paste0("Normalized for library size"))
+  # exponentiate, because RNA counts are log-normally distributed
+  norm_scores@x <- pmin(1e9, exp(norm_scores@x) - 1)
+  print(paste0("Exponentiated matrix"))
+  
+  # free some memory
+  rm(peak_mat_subset)
+  rm(activity_model)
+  rm(scores)
+  gc(reset = TRUE)
+
+  # scale with total activity scores again
+  scale_factors <- Matrix::Diagonal(x = 1/Matrix::colSums(norm_scores))
+  print(paste0("Divided by total activity to get value between zero and one"))
+  
+  final_scores <- Matrix::t(scale_factors %*% Matrix::t(norm_scores))
+
+  return(final_scores)
+
+}
+
+```
+
+```{r}
+# test the peak matrix from Ricard, to see whether the problem is due to the peaks
+atacSE <- readH5AD("jupyter_notebooks/anndata_atac_peak_matrix.h5ad")
+peaks1 <- assays(atacSE)[[1]]
+rownames_df <- rowData(atacSE) %>% as.data.frame() %>%
+  group_by(chr) %>%
+  mutate(idx_new = seq_along(chr)) %>% 
+  ungroup %>%
+  unite(chr_idx, chr, idx_new, remove = FALSE, sep = "_")
+rownames(peaks1) <- rownames_df$chr_idx
+#p2g %>% unite(chr_coord, seqnames,   )
+test <- gene_activity_scores(peaks1, hvg_p2g)
+```
+
 
 # Computing gene activity scores based on z-scores p2g matrix
 
@@ -437,7 +577,7 @@ gene_activity_scores <- function(peak_mat, p2g_mat) {
 <summary>Computing & saving gene activity scores based on z-scores</summary>
 
 Compute gene activity score based on z-score of p2g links for each peak:
-```#{r}
+```{r}
 scores <- gene_activity_scores(peak_mat, zscore_mat)
 
 
@@ -462,15 +602,17 @@ writeH5AD(sce, "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data
 Compute gene activity score without z-scores, but only including positive 
 peak-to-gene links:
 
-```#{r}
+```{r}
 scores <- gene_activity_scores(peak_mat, hvg_p2g)
 
 
-sce <- SingleCellExperiment(list(scores=scores), 
-                            rowData = as.data.frame(rownames(scores)),
-                            colData = as.data.frame(colnames(scores)))
+sce <- SingleCellExperiment(list(scores=test), 
+                            rowData = as.data.frame(rownames(test)),
+                            colData = as.data.frame(colnames(test)))
 
-writeH5AD(sce, "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/jupyter_notebooks/pos_p2g_links_scores", X_name = "scores")
+writeH5AD(sce, "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/jupyter_notebooks/p2g_gene_activity_scores/debugging1", X_name = "scores")
+
+#writeH5AD(sce, "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/jupyter_notebooks/p2g_gene_activity_scores/pos_p2g_links_scores", X_name = "scores")
 ```
 </details>
 
@@ -529,6 +671,11 @@ gene_activity_scores_new <- function(peak_mat, p2g_mat) {
 
 }
 ```
+
+```{r}
+scores1 <- gene_activity_scores_new(peak_mat, hvg_p2g)
+```
+
 
 <details>
 <summary>Computing & saving gene activity scores based on formula without dividing by constant</summary>
@@ -602,11 +749,12 @@ distanc_weighted_gene_activity_scores <- function(p2g_mat, geneModel = "exp(-dis
     GRanges() 
   
   #TODO: Filter for genes!
-  p2g_filt <- p2g %>% filter(gene %in% rownames(hvg_p2g))
+  p2g_filt <- p2g %>% filter(gene %in% rownames(p2g_mat))
   
   
   # combine the three dataframes
-  p2g_join <- left_join(p2g_filt, as.data.frame(pos_atac_granges), by = "chr_idx")
+  p2g_join <- left_join(p2g_filt, as.data.frame(pos_atac_granges),
+                        by = "chr_idx")
   p2g_join <- left_join(p2g_join, as.data.frame(gene_anno),
                         by = "gene", suffix = c(".atac", ".rna"))
 
@@ -659,10 +807,14 @@ distanc_weighted_gene_activity_scores <- function(p2g_mat, geneModel = "exp(-dis
 
   # save as anndata object for further analysis in python
   sce <- SingleCellExperiment(list(final_scores=weighted_scores),
-                            rowData = as.data.frame(rownames(weighted_scores)),
-                            colData = as.data.frame(colnames(weighted_scores)))
+                            rowData = as.data.frame(
+                              rownames(weighted_scores)),
+                            colData = as.data.frame(
+                              colnames(weighted_scores)))
 
-  writeH5AD(sce, paste0("/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/jupyter_notebooks/p2g_gene_activity_scores/", weight, "_distance_weighted_p2g", X_name = "final_scores"))
+  writeH5AD(sce, 
+            paste0("/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/jupyter_notebooks/p2g_gene_activity_scores/", weight, "_distance_weighted_p2g"), 
+            X_name = "final_scores")
   
   #return(p1, p2)
                                                   }
