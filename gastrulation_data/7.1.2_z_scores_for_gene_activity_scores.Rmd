@@ -105,6 +105,98 @@ p2g <- readRDS("p2g_links_archr/pos_peak2gene_links_df.rds")
 print(paste0("Using ArchR we get ", length(unique(p2g$chr_idx)), " peaks which are positively linked to genes"))
 ```
 
+```{r}
+sample_size <- 10e3
+links <- p2g %>% 
+  slice_sample(n = min(sample_size, nrow(.)))
+
+
+
+
+# aggregate peaks
+
+# create matrix to store peaks aggregated for each celltype
+peak_agg <- matrix(data = 0,
+                   nrow = dim(peaks)[[1]],
+                   ncol = length(unique(colData(peaks)$celltypes)),
+                   dimnames = list(rownames(peak_mat),
+                     unique(colData(peaks)$celltypes)))
+
+celltype = "Erythroid3"
+for (celltype in unique(colData(peaks)$celltypes)){
+  barcodes <- rownames(colData(peaks) %>% 
+                         as.data.frame() %>% 
+                         filter(celltypes == celltype))
+  peak_agg[, celltype] <- rowSums(peak_mat[, barcodes])
+}
+
+peak_agg[1:5, 1:5]
+
+
+# aggregate gene expression
+gene_expr <- getMatrixFromProject(proj, 
+                                  useMatrix = "GeneExpressionMatrix")
+expr_mat <- assays(gene_expr)[[1]]
+
+expr_agg <- matrix(data = 0, 
+                   nrow = dim(expr_mat)[[1]],
+                   ncol = length(unique(colData(gene_expr)$celltypes)),
+                   dimnames  = list(rowData(gene_expr)$name,
+                   unique(colData(gene_expr)$celltypes)))
+
+stopifnot(colnames(expr_agg) == colnames(peak_agg))
+
+for (celltpe in unique(colData(gene_expr)$celltypes)){
+  barcodes <- row.names(colData(peaks) %>% 
+                         as.data.frame() %>% 
+                         filter(celltypes == celltype))
+  expr_agg[, celltype] <- rowSums(expr_mat[, barcodes])
+}
+
+expr_agg[1:5, 1:5]
+stopifnot(any(is.na(expr_agg)) == FALSE)
+```
+
+Normalize the aggregated matrix & select subsampled peaks
+
+```{r}
+# lognormalize
+norm_peak_agg <- t(t(peak_agg) / colSums(peak_agg))
+norm_peak_agg <- log1p(norm_peak_agg * 1e4)
+
+# After normalizaton, extract the subsampled peaks from p2g links
+norm_peak_agg <- norm_peak_agg[links$chr_idx, ]
+norm_peak_agg <- norm_peak_agg - rowMeans(peak_agg)
+norm_peak_agg <- norm_peak_agg / rowSds(peak_agg)
+
+stopifnot(all(dplyr::near(rowVars(norm_peak_agg), 1)))
+stoptifnot(all(dplyr::near(rowMeans(norm_peak_agg), 0)))
+
+norm_peak_agg[1:5, 1:5]
+```
+
+
+Create a heatmap of peak accessibility z scores
+
+```{r}
+cts <- c("Erythroid1", "Allantois", "Cardiomyocytes", "Gut")
+
+
+ht <- ComplexHeatmap::Heatmap(
+  matrix=norm_peak_agg[, cts], 
+  cluster_rows = T, 
+  cluster_columns = F, 
+  show_row_dend = F,
+  show_row_names = F,
+  row_title = "Peaks",
+  heatmap_legend_param = list(title = "Accessibility Z-Score",
+                              direction = "horizontal"),
+  column_names_side = c("top"),
+  column_names_gp = grid::gpar(fontsize = 8)
+)
+```
+
+
 
 ```{r}
 p2g %>% group_by(gene) %>%
@@ -438,6 +530,8 @@ print(paste0("The minimum value in the z-score matrix after setting negative val
 
 #ggplot() + geom_histogram(aes(x = colSums(zscore_mat) / colSums(!!zscore_mat)), bins = 100)
 
+any(is.na(zscore_mat))
+
 ```
 
 Now we will use this z-score matrix to compute our gene activity scores:
@@ -505,7 +599,7 @@ gene_activity_scores <- function(peak_mat, p2g_mat) {
 
 ```
 
-```{r}
+```#{r}
 # test the peak matrix from Ricard, to see whether the problem is due to the peaks
 atacSE <- readH5AD("jupyter_notebooks/anndata_atac_peak_matrix.h5ad")
 peaks1 <- assays(atacSE)[[1]]
@@ -585,7 +679,7 @@ sce <- SingleCellExperiment(list(scores=scores),
                             rowData = as.data.frame(rownames(scores)),
                             colData = as.data.frame(colnames(scores)))
 
-writeH5AD(sce, "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/jupyter_notebooks/p2g_gene_activity_scores/debugging",
+writeH5AD(sce, "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/jupyter_notebooks/p2g_gene_activity_scores/old_function_z_score",
           X_name = "scores")
 
 # writeH5AD(sce, "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/z_score_p2g_gene_activity_scores",
@@ -1130,7 +1224,7 @@ p4 <- p2g_join %>%
   ggplot() +
   geom_boxplot(aes(x = bin, y = Correlation), fill="#69b3a2") +
   labs(title = "Relationship between distance and correlation of p2g links, 1kb bins",
-       x = "Distance < 100kb", y = "Correlation") + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+       x = "Distance < 100kb", y = "Correlation > 0.5") + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
 
 
 cowplot::plot_grid(p1, p2, p3, p4, ncol = 2)
@@ -1231,7 +1325,7 @@ distance <- distance(ranges(geneRegions)[queryHits(tmp)],
 
 
 ### PLOT
-ggplot() + geom_histogram(aes(x = distance), bins = 200) +
+p1 <- ggplot() + geom_histogram(aes(x = distance), bins = 200) +
   labs(title = "Distance between peak middle and gene TSS within a gene window") +
   geom_vline(xintercept = 5000, color = "red")
 
@@ -1250,10 +1344,12 @@ distance <- distance * signDist
 
 
 #### PLOT
-print(ggplot() + geom_histogram(aes(x = distance), bins = 500) + 
+p2 <- ggplot() + geom_histogram(aes(x = distance), bins = 500) + 
   labs(title = "Distribution of relative distances between genes and peaks within a gene region",
-       x = "relative distance to TSS")) + 
+       x = "relative distance to TSS") + 
   geom_vline(xintercept = c(5000, -5000), color = "red")
+
+cowplot::plot_grid(p1, p2, ncol = 1)
 
 ```
 

@@ -55,7 +55,7 @@ p2g <- readRDS("/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data
 
 ```{r}
 p2g_original <- p2g
-p2g <- p2g %>% as.data.frame() %>% filter(Correlation > 0)
+p2g <- p2g %>% as.data.frame() %>% filter(Correlation > 0.5)
 ```
 
 
@@ -113,6 +113,8 @@ colnames(p2g_new) <- atac_idx$chr_idx
 
 
 ```{r}
+proj <- loadArchRProject("11_added_Ricards_peaks/")
+
 peaks <- getMatrixFromProject(proj, useMatrix = "PeakMatrix", binarize = FALSE)
 
 # get matrix
@@ -123,8 +125,159 @@ peakset <- peakset %>% unite(chr_idx, seqnames, idx, sep = "_", remove = FALSE)
 
 rownames(peak_mat) <- peakset$chr_idx
 ```
+Use correlations > 0.5
+
+```#{r}
+# What is the numer of peaks linked to each gene?
+ggplot() + geom_histogram(aes(x = rowSums(p2g_new)), bins  = 200)
+
+# remove all genes which do not have high correlations with any peak
+test <- p2g_new[rowSums(p2g_new) != 0, ]
+
+ggplot() + geom_histogram(aes(x = rowSums(test)), bins  = 200)
+
+# account for number of peaks linked to each gene by dividing by the total sum of peaks
+test <- test / rowSums(test)
+ggplot() + geom_histogram(aes(x = rowSums(test)))
 
 
+# Are some peaks not linked to any gene?
+ggplot() + geom_histogram(aes(x = colSums(test)), bins = 200)
+
+# remove peaks which are not linked to any gene
+test <- test[, colSums(test) != 0]
+
+any(is.na(test))
+dim(test)
+
+subset <- peak_mat[colnames(test), ]
+dim(subset)
+
+
+# keep only hvg 
+hvg_list <- read.table("jupyter_notebooks/hvg_list", sep = ",")$x
+test <- test[rownames(test) %in% hvg_list, ]
+dim(test)
+
+
+scores <- test %*% subset
+
+scores_norm <- t(t(scores) / colSums(scores))
+
+
+min(scores_norm)
+max(scores_norm)
+
+ggplot() + geom_histogram(aes(x = rowSums(scores_norm)), bins = 200)
+
+# What is the relationship between activity and library size
+df <- data.frame(cell = colnames(scores_norm),
+                 total_activity = colSums(scores_norm),
+                 total_sites = colSums(subset))
+  
+df %>% 
+  ggplot(aes(x = total_sites, y = total_activity)) + 
+  geom_point() +
+  labs(title = "Relationship between activity scores and library depth", 
+       y = "total activity", x = "peaks")
+
+
+```
+
+```#{r}
+sce <- SingleCellExperiment(list(scores=scores), 
+                            rowData = as.data.frame(rownames(scores)),
+                            colData = as.data.frame(colnames(scores)))
+
+writeH5AD(sce, "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/jupyter_notebooks/p2g_gene_activity_scores/debugging9",
+          X_name = "scores")
+```
+
+# Zscores
+
+```##{r}
+# What is the numer of peaks linked to each gene?
+ggplot() + geom_histogram(aes(x = rowSums(p2g_new)), bins  = 200)
+
+# remove all genes which do not have high correlations with any peak
+test <- p2g_new[rowSums(p2g_new) != 0, ]
+
+ggplot() + geom_histogram(aes(x = rowSums(test)), bins  = 200)
+
+# account for number of peaks linked to each gene by dividing by the total sum of peaks
+test <- test / rowSums(test)
+ggplot() + geom_histogram(aes(x = rowSums(test)))
+
+
+# Are some peaks not linked to any gene?
+ggplot() + geom_histogram(aes(x = colSums(test)), bins = 200)
+
+# remove peaks which are not linked to any gene
+test <- test[, colSums(test) != 0]
+
+any(is.na(test))
+dim(test)
+
+
+
+
+a <- sparseMatrix(i = c(1,4,3,5,5, 5, 6, 3, 4),
+             j = c(4,2,1,3,1, 3, 4, 1, 4),
+             x = c(3,4,1,2,1, 2, 1, 1, 3),
+             dims = c(8, 10))
+
+
+ggplot() + geom_histogram(aes(x = colMeans(test)), bins = 200)
+
+zscores <- t((t(test) - colMeans(test)) / colSds(test)) 
+
+ggplot() + geom_histogram(aes(x = colMeans(zscores)), bins = 200)
+
+
+subset <- peak_mat[colnames(zscores), ]
+dim(subset)
+
+test <- zscores
+# keep only hvg 
+hvg_list <- read.table("jupyter_notebooks/hvg_list", sep = ",")$x
+test <- test[rownames(test) %in% hvg_list, ]
+dim(test)
+
+
+scores <- test %*% subset
+
+scores_norm <- t(t(scores) / colSums(scores))
+
+
+min(scores_norm)
+max(scores_norm)
+
+ggplot() + geom_histogram(aes(x = rowSums(scores_norm)), bins = 200)
+
+# What is the relationship between activity and library size
+df <- data.frame(cell = colnames(scores_norm),
+                 total_activity = colSums(scores_norm),
+                 total_sites = colSums(subset))
+  
+df %>% 
+  ggplot(aes(x = total_sites, y = total_activity)) + 
+  geom_point() +
+  labs(title = "Relationship between activity scores and library depth", 
+       y = "total activity", x = "peaks")
+
+
+```
+
+```#{r}
+
+scores <- scores_norm
+sce <- SingleCellExperiment(list(scores=scores), 
+                            rowData = as.data.frame(rownames(scores)),
+                            colData = as.data.frame(colnames(scores)))
+
+writeH5AD(sce, "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/jupyter_notebooks/p2g_gene_activity_scores/debugging10",
+          X_name = "scores")
+```
 
 ```{r}
 gene_activity_scores <- function(peak_mat, p2g_mat) {
@@ -217,15 +370,45 @@ p2g_mat <- p2g_new[rownames(p2g_new) %in% hvg_list, ]
 p2g_mat <- p2g_mat[, colSums(p2g_mat) != 0]
 p2g_mat <- p2g_mat[rowSums(p2g_mat) != 0, ]
 
+
+zscore_mat <- t(zscore(t(as.matrix(p2g_mat))))
+zscore_mat[zscore_mat < 0] = 0
+
+
 any(colSums(p2g_mat) == 0)
 any(rowSums(p2g_mat) == 0)
 any(is.na(p2g_mat))
+#any(is.na(zscore_mat))
 ```
 
 
 ```{r}
-scores <- gene_activity_scores(peak_mat, p2g_mat)
+scores_zscore <- gene_activity_scores(peak_mat, zscore_mat)
 #zscores <- gene_activity_scores(peak_mat, )
+```
+
+```{r}
+sce <- SingleCellExperiment(list(scores=scores), 
+                            rowData = as.data.frame(rownames(scores)),
+                            colData = as.data.frame(colnames(scores)))
+
+writeH5AD(sce, "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/jupyter_notebooks/p2g_gene_activity_scores/debugging9",
+          X_name = "scores")
+```
+
+
+```{r}
+
+# expr <- c(20, 15, 0,0,100,80,0,2,1,0,2,1,5,10,50,55)
+# corr <- c(0.5, 0.6, 0.7, 0, 0, 0, 0, 0, 0, 0, 0.1, 0.4, 0.5, 0.6, 0.2, 0.4, 0.5, 0, 0, 0, 0, 0, 0, 0, 0, 0.7, 0.8, 0)
+# acc <- 
+
+gene1 <- zscore_mat[1, ]
+gene1_expr <- gene_expr_mat[1, ]
+
+subset <- peak_mat[names(gene1), ]
+scores <- gene1 %*% subset
+
 ```
 
 
@@ -236,7 +419,7 @@ sce <- SingleCellExperiment(list(scores=scores),
                             rowData = as.data.frame(rownames(scores)),
                             colData = as.data.frame(colnames(scores)))
 
-writeH5AD(sce, "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/jupyter_notebooks/p2g_gene_activity_scores/debugging7",
+writeH5AD(sce, "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/jupyter_notebooks/p2g_gene_activity_scores/debugging9",
           X_name = "scores")
 ```
 

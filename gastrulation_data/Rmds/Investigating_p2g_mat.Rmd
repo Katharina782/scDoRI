@@ -1,0 +1,324 @@
+---
+title: "Investigating p2g_mat"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(cache = FALSE)
+knitr::opts_knit$set(root.dir = "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data")
+setwd("/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data")
+
+set.seed(1)
+```
+
+```{r}
+suppressPackageStartupMessages({
+
+library(ArchR)
+library(tidyverse)
+library(SingleCellExperiment)
+library(zellkonverter)
+library(dtwclust)
+})
+```
+
+```{r}
+proj <- loadArchRProject("11_added_Ricards_peaks")
+```
+
+```#{r}
+proj <- addPeak2GeneLinks(ArchRProj = proj,
+  reducedDims  = "atac_LSI_100000",
+  useMatrix = "GeneExpressionMatrix",
+  maxDist = 250000,
+  verbose = TRUE
+  )
+
+p2g <- getPeak2GeneLinks(
+  ArchRProj = proj,
+  corCutOff = -1,
+  resolution = 1,
+  FDRCutOff = 1e-04,
+  varCutOffATAC = .25,
+  varCutOffRNA = .25, 
+  returnLoops = FALSE
+)
+```
+
+
+```{r}
+#saveRDS(p2g, "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/Rmds/new_peak2gene_links_22_04_2022")
+p2g <- readRDS("/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/Rmds/new_peak2gene_links_22_04_2022")
+```
+
+Read in the peak matrix:
+
+```{r}
+# get peak matrix
+peaks <- getMatrixFromProject(proj, useMatrix = "PeakMatrix", binarize = FALSE)
+peak_mat <- assays(peaks)[[1]]
+
+# read in gne expresssion matrix
+gene_expr <- getMatrixFromProject(proj, 
+                                  useMatrix = "GeneExpressionMatrix")
+expr_mat <- assays(gene_expr)[[1]]
+```
+
+```{r}
+hvg_list <- read.table("jupyter_notebooks/hvg_list", sep = ",")$x
+
+
+# get RNA index of hvg
+meta_rna <- rowData(gene_expr) %>% as.data.frame() %>% mutate(row_index = seq(nrow(.)))
+idx <- (meta_rna %>% filter(name %in% hvg_list))$row_index
+
+expr_sub <- expr_mat[idx, ]
+```
+
+
+
+Subsample the p2g links, so we only have a few exemplary links:
+
+```{r}
+#sample_size <- 10e3
+links <- p2g %>% as.data.frame() %>% 
+  filter(Correlation > 0.2) %>% 
+  filter(idxRNA %in% idx) 
+  #slice_sample(n = min(sample_size, nrow(.)))
+  #slice_max(order_by = Correlation, n = min(sample_size, nrow(.)))
+```
+
+
+
+# Create a p2g link matrix
+
+```{r}
+p2g_mat <- sparseMatrix(i = links$idxRNA,
+             j = links$idxATAC,
+             x= links$Correlation, 
+             dims = c(dim(expr_mat)[1],
+             dim(peak_mat)[1]))
+
+rownames(p2g_mat) <- rowData(gene_expr)$name
+
+#stopifnot(any(p2g_mat >= 0))
+```
+
+
+
+
+
+
+```{r}
+rownames(peak_mat) <- seq.int(dim(peak_mat)[1])
+colnames(p2g_mat) <- seq.int(dim(peak_mat)[1])
+
+# remove columns of peaks which are not linked to any peak
+p2g_mat_sub <- p2g_mat[, colSums(p2g_mat) != 0]
+p2g_mat_sub <- p2g_mat_sub[hvg_list, ]
+p2g_mat_sub <- p2g_mat_sub[rowSums(p2g_mat_sub) != 0, ]
+stopifnot(all(rownames(p2g_mat_sub) %in% hvg_list))
+stopifnot(any(is.na(p2g_mat_sub) == FALSE))
+
+peak_mat_sub <- peak_mat[colnames(p2g_mat_sub), ]
+stopifnot(rownames(peak_mat_sub) == colnames(p2g_mat_sub))
+stopifnot(any(is.na(peak_mat_sub) == FALSE))
+stopifnot(dim(peak_mat_sub)[1] == dim(p2g_mat_sub)[2])
+```
+
+```{r}
+test <- gene_activity_scores(peak_mat_sub, p2g_mat_sub)
+```
+
+
+
+```{r}
+p2g_mat <- p2g_mat_sub
+peak_mat_subset <- peak_mat_sub
+gene_activity_scores <- function(peak_mat_subset, p2g_mat) {
+  #peak_mat_subset <- peak_mat[colnames(p2g_mat), ]
+  # normalize the p2g matrix by the total number of peaks linked to each gene
+  p2g_mat <- p2g_mat / rowSums(p2g_mat)
+  print(paste0("normalized the p2g matrix"))
+  stopifnot(any(is.na(p2g_mat)) == FALSE)
+  # Now we can compute a weighted sum of peak2gene correlations for each
+  # peak and gene
+  scores <- p2g_mat %*% peak_mat_subset
+  print(paste0("Computed weightes sum of peaks for each gene and cell"))
+  # create a dataframe for computing the linear model
+  linear_model_df <- data.frame(cell = colnames(scores),
+                               total_activity = colSums(scores),
+                               total_sites = colSums(peak_mat_subset))
+  # compute a linear model
+  activity_model <- stats::lm(log(total_activity) ~ log(total_sites),
+                            data = linear_model_df)
+  # extract the fitted model
+  linear_model_df$fitted_curve <- exp(as.vector(predict(activity_model,
+                                                         type = "response")))
+  # compute size factors from fitted model
+  size_factors <- mean(linear_model_df$fitted_curve) / linear_model_df$fitted_curve
+  # create diagonal matrix containing the size factors
+  size_factors_mat <- Matrix::Diagonal(x = size_factors)
+  #row.names(size_factors_mat) <- linear_model_df$cell
+  # normalize by library depth size factors
+  norm_scores <- Matrix::t(size_factors_mat %*% Matrix::t(scores))
+  print(paste0("Normalized for library size"))
+  # exponentiate, because RNA counts are log-normally distributed
+  norm_scores@x <- pmin(1e9, exp(norm_scores@x) - 1)
+  print(paste0("Exponentiated matrix"))
+  
+  # free some memory
+  rm(peak_mat_subset)
+  rm(activity_model)
+  rm(scores)
+  gc(reset = TRUE)
+
+  # scale with total activity scores again
+  scale_factors <- Matrix::Diagonal(x = 1/Matrix::colSums(norm_scores))
+  print(paste0("Divided by total activity to get value between zero and one"))
+  
+  final_scores <- Matrix::t(scale_factors %*% Matrix::t(norm_scores))
+
+  return(final_scores)
+
+}
+
+```
+
+
+
+```{r}
+p2g_scores <- final_scores
+
+cp_names <- colnames(colData(gene_expr))
+cp_names[20] <- "celltypes"
+colnames(colData(gene_expr)) <- cp_names
+
+rownames(expr_mat) <- rowData(gene_expr)$name
+genes <- expr_mat[as.vector(rownames(p2g_scores)), ]
+
+stopifnot(any(rownames(genes) == rownames(p2g_scores)))
+
+# create matrix to store aggregates
+expr_agg <- matrix(data = 0, 
+                   nrow = dim(genes)[1],
+                   ncol = length(unique(colData(gene_expr)$celltypes)),
+                   dimnames  = list(rownames(p2g_scores),
+                   unique(colData(gene_expr)$celltypes)))
+
+
+# fill matrix
+for (celltype in unique(colData(gene_expr)$celltypes)){
+  barcodes <- rownames(colData(gene_expr) %>% 
+                         as.data.frame() %>% 
+                         filter(celltypes == celltype))
+  expr_agg[, celltype] <- rowSums(genes[, barcodes])
+}
+
+
+
+p2g_score_agg <- matrix(data = 0, 
+                        nrow = dim(p2g_scores)[1],
+                        ncol = length(unique(colData(gene_expr)$celltypes)),
+                        dimnames = list(rownames(p2g_scores),
+                                        unique(colData(gene_expr)$celltypes)))
+
+for (celltype in unique(colData(gene_expr)$celltypes)){
+  barcodes <- rownames(colData(gene_expr) %>% 
+                         as.data.frame() %>% 
+                         filter(celltypes == celltype))
+  p2g_score_agg[, celltype] <- rowSums(p2g_scores[, barcodes])
+}
+
+```
+
+
+
+Correlations between aggregated gene expression and aggregated p2g scores:
+
+```{r}
+correlations = c()
+for (i in seq.int(dim(p2g_score_agg)[1])){
+  rowa <- expr_agg[i, ]
+  rowa <- rowa - mean(rowa)
+  rowa <- rowa / sd(rowa)
+  
+  rowb <- p2g_score_agg[i, ]
+  rowb <- rowb - mean(rowb)
+  rowb <- rowb / sd(rowb)
+  
+  corr_value = mean(rowa * rowb)
+  correlations <- c(correlations, corr_value)
+  
+} 
+
+ggplot() + geom_histogram(aes(x = correlations), bins = 200)
+```
+
+
+
+```#{r}
+
+
+
+# sce <- SingleCellExperiment(list(p2g_mat = p2g_mat))
+# 
+# writeH5AD(sce, "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/jupyter_notebooks/p2g_gene_activity_scores/p2g_mat_250kb",
+#           X_name = "p2g_mat")
+
+# 
+# 
+# sce <- SingleCellExperiment(list(peak_mat = peak_mat))
+# 
+# writeH5AD(sce, "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/jupyter_notebooks/p2g_gene_activity_scores/peak_mat",
+#           X_name = "peak_mat")
+
+
+# cp_names <- colnames(colData(gene_expr))
+# cp_names[20] <- "celltypes"
+# colnames(colData(gene_expr)) <- cp_names
+
+sce <- SingleCellExperiment(list(genes = expr_mat),
+                           #rowData = as.data.frame(rownames(gene_expr)),
+                           colData = as.data.frame(colData(gene_expr)))
+
+# writeH5AD(sce, "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/jupyter_notebooks/p2g_gene_activity_scores/gene_expr_mat",
+#           X_name = "genes")
+# 
+# 
+# #p2g_mat_norm <- p2g_mat / rowSums(p2g_mat)
+# scores <- p2g_mat %*% peak_mat
+# scores <- t(t(scores) / colSums(scores))
+# stopifnot(any(is.na(scores)) == FALSE)
+# scores@x <- pmin(1e9, exp(scores@x) - 1)
+# 
+# 
+# 
+# sce <- SingleCellExperiment(list(investigation = investigation))
+# 
+# writeH5AD(sce, "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/jupyter_notebooks/p2g_gene_activity_scores/investigation_scores",
+#           X_name = "investigation")
+
+
+
+
+
+# latent embedding
+emb <- getReducedDims(
+  ArchRProj = proj,
+  reducedDims = "atac_LSI_100000",
+  returnMatrix = TRUE,
+  dimsToUse = 1:30,
+  scaleDims = NULL,
+  corCutOff = 0.75
+)
+dim(emb)
+
+
+sce <- SingleCellExperiment(list(embedding = emb))
+
+writeH5AD(sce, "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/jupyter_notebooks/p2g_gene_activity_scores/archr_lsi_embedding",
+          X_name = "embedding")
+
+
+```
