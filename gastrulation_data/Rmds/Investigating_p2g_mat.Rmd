@@ -1,13 +1,19 @@
 ---
 title: "Investigating p2g_mat"
-output: html_document
+output: 
+  html_document:
+    toc: true
+    toc_depth: 2
+    code_folding: hide
+    toc_float: true
+    code_download: true
+    theme: cosmo
+    highlight: textmate
 ---
-
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(cache = FALSE)
 knitr::opts_knit$set(root.dir = "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data")
 setwd("/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data")
-
 set.seed(1)
 ```
 
@@ -23,7 +29,7 @@ library(dtwclust)
 ```
 
 ```{r}
-proj <- loadArchRProject("11_added_Ricards_peaks")
+proj <- loadArchRProject("11_added_Ricards_peaks", showLogo = FALSE)
 ```
 
 ```#{r}
@@ -45,13 +51,14 @@ p2g <- getPeak2GeneLinks(
 )
 ```
 
+# P2G-link matrix 
 
 ```{r}
 #saveRDS(p2g, "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/Rmds/new_peak2gene_links_22_04_2022")
 p2g <- readRDS("/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/Rmds/new_peak2gene_links_22_04_2022")
 ```
 
-Read in the peak matrix:
+Read in the peak accessibility matrix and the gene expression matrix:
 
 ```{r}
 # get peak matrix
@@ -62,7 +69,21 @@ peak_mat <- assays(peaks)[[1]]
 gene_expr <- getMatrixFromProject(proj, 
                                   useMatrix = "GeneExpressionMatrix")
 expr_mat <- assays(gene_expr)[[1]]
+
+
+# read in archr gene activity scores
+archr_scores <- getMatrixFromProject(proj, useMatrix = "GeneScoreMatrix")
+
+cp_names <- colnames(colData(archr_scores))
+cp_names[20] <- "celltypes"
+colnames(colData(archr_scores)) <- cp_names
+
+archr_scores_mat <- assays(archr_scores)[[1]]
+rownames(archr_scores_mat) <- rowData(archr_scores)$name
 ```
+
+We will only use peaks linked to highly variable genes to compute gene
+activity scores.
 
 ```{r}
 hvg_list <- read.table("jupyter_notebooks/hvg_list", sep = ",")$x
@@ -77,20 +98,17 @@ expr_sub <- expr_mat[idx, ]
 
 
 
-Subsample the p2g links, so we only have a few exemplary links:
-
 ```{r}
-#sample_size <- 10e3
 links <- p2g %>% as.data.frame() %>% 
   filter(Correlation > 0.2) %>% 
   filter(idxRNA %in% idx) 
-  #slice_sample(n = min(sample_size, nrow(.)))
-  #slice_max(order_by = Correlation, n = min(sample_size, nrow(.)))
+
+stopifnot(all(links$Correlation > 0))
 ```
 
 
 
-# Create a p2g link matrix
+Create a p2g link matrix
 
 ```{r}
 p2g_mat <- sparseMatrix(i = links$idxRNA,
@@ -101,41 +119,43 @@ p2g_mat <- sparseMatrix(i = links$idxRNA,
 
 rownames(p2g_mat) <- rowData(gene_expr)$name
 
-#stopifnot(any(p2g_mat >= 0))
+
+rownames(peak_mat) <- seq.int(dim(peak_mat)[1])
+colnames(p2g_mat) <- seq.int(dim(peak_mat)[1])
 ```
 
 
 
-
-
+Filter and prepare peak matrix and p2g links matrix:
 
 ```{r}
-rownames(peak_mat) <- seq.int(dim(peak_mat)[1])
-colnames(p2g_mat) <- seq.int(dim(peak_mat)[1])
-
 # remove columns of peaks which are not linked to any peak
 p2g_mat_sub <- p2g_mat[, colSums(p2g_mat) != 0]
+# use only highly variable genes
 p2g_mat_sub <- p2g_mat_sub[hvg_list, ]
+# remove any genes which are not linked to any peak
 p2g_mat_sub <- p2g_mat_sub[rowSums(p2g_mat_sub) != 0, ]
 stopifnot(all(rownames(p2g_mat_sub) %in% hvg_list))
 stopifnot(any(is.na(p2g_mat_sub) == FALSE))
 
+# keep only peaks which are linked to genes in the accessibility matrix
 peak_mat_sub <- peak_mat[colnames(p2g_mat_sub), ]
 stopifnot(rownames(peak_mat_sub) == colnames(p2g_mat_sub))
 stopifnot(any(is.na(peak_mat_sub) == FALSE))
 stopifnot(dim(peak_mat_sub)[1] == dim(p2g_mat_sub)[2])
+
+expr_mat_sub <- expr_mat[rownames(p2g_mat_sub), ]
 ```
 
+
+
+
+
+
+### Function to compute gene activity scores
+
 ```{r}
-test <- gene_activity_scores(peak_mat_sub, p2g_mat_sub)
-```
-
-
-
-```{r}
-p2g_mat <- p2g_mat_sub
-peak_mat_subset <- peak_mat_sub
-gene_activity_scores <- function(peak_mat_subset, p2g_mat) {
+gene_activity_scores <- function(peak_mat, p2g_mat) {
   #peak_mat_subset <- peak_mat[colnames(p2g_mat), ]
   # normalize the p2g matrix by the total number of peaks linked to each gene
   p2g_mat <- p2g_mat / rowSums(p2g_mat)
@@ -143,12 +163,12 @@ gene_activity_scores <- function(peak_mat_subset, p2g_mat) {
   stopifnot(any(is.na(p2g_mat)) == FALSE)
   # Now we can compute a weighted sum of peak2gene correlations for each
   # peak and gene
-  scores <- p2g_mat %*% peak_mat_subset
+  scores <- p2g_mat %*% peak_mat
   print(paste0("Computed weightes sum of peaks for each gene and cell"))
   # create a dataframe for computing the linear model
   linear_model_df <- data.frame(cell = colnames(scores),
                                total_activity = colSums(scores),
-                               total_sites = colSums(peak_mat_subset))
+                               total_sites = colSums(peak_mat))
   # compute a linear model
   activity_model <- stats::lm(log(total_activity) ~ log(total_sites),
                             data = linear_model_df)
@@ -168,7 +188,7 @@ gene_activity_scores <- function(peak_mat_subset, p2g_mat) {
   print(paste0("Exponentiated matrix"))
   
   # free some memory
-  rm(peak_mat_subset)
+  #rm(peak_mat_subset)
   rm(activity_model)
   rm(scores)
   gc(reset = TRUE)
@@ -185,14 +205,375 @@ gene_activity_scores <- function(peak_mat_subset, p2g_mat) {
 
 ```
 
+```{r}
+p2g_scores <- gene_activity_scores(peak_mat_sub, p2g_mat_sub)
+```
+
+
+
+
+# knn cell aggregates from ArchR
+
+```{r}
+rna_knn <- readRDS("11_added_Ricards_peaks/Peak2GeneLinks/seRNA-Group-KNN.rds")
+rna_agg_mat <- assays(rna_knn)[[1]]
+rownames(rna_agg_mat) <- rowData(rna_knn)$name
+
+cell_agg_list <- metadata(rna_knn)[[1]]
+
+
+knn_aggregates <- function(matrix, cell_agg_list){
+  # empty matrix to store aggregates
+  agg <- matrix(data = 0,
+                nrow = dim(matrix)[1],
+                ncol = length(cell_agg_list),
+                dimnames = list(rownames(matrix), NULL))
+  
+  for (i in seq.int(length(cell_agg_list))) {
+    agg[, i] <- rowSums(matrix[, cell_agg_list[[i]]])
+  }
+  return(agg)
+}
+
+
+rna_agg <- knn_aggregates(expr_mat_sub, cell_agg_list)
+agg_p2g_knn <- knn_aggregates(p2g_scores, cell_agg_list)
+
+archr_knn <- archr_scores_mat[as.vector(rownames(agg_p2g_knn)),]
+agg_archr_knn <- knn_aggregates(archr_knn, cell_agg_list)
+```
 
 
 ```{r}
-p2g_scores <- final_scores
 
+
+archr_knn <- rowwise_correlations(rna_agg, agg_archr_knn, "Archr gene activity scores")
+p2g_knn <- rowwise_correlations(rna_agg, agg_p2g_knn, "Peak-to-gene links activity scores")
+
+cowplot::plot_grid(archr_knn[[2]], p2g_knn[[2]], ncol = 2)
+
+ggplot() + geom_density_2d_filled(aes(x = p2g_knn[[1]], 
+                                      y = archr_knn[[1]]), alpha = .5) +
+  geom_point(aes(x = p2g_knn[[1]], y = archr_knn[[1]])) +
+  geom_line(aes(x = p2g_knn[[1]], y = p2g_knn[[1]]), col = "red")
+  theme(legend.position = "None") 
+
+```
+
+
+
+# Example of p2g links within 250kb
+
+
+```{r}
 cp_names <- colnames(colData(gene_expr))
 cp_names[20] <- "celltypes"
 colnames(colData(gene_expr)) <- cp_names
+
+rownames(expr_mat) <- rowData(gene_expr)$name
+genes <- expr_mat[as.vector(rownames(p2g_scores)), ]
+
+stopifnot(any(rownames(genes) == rownames(p2g_scores)))
+
+
+
+# create matrix to store aggregates
+expr_agg <- matrix(data = 0, 
+                   nrow = dim(genes)[1],
+                   ncol = length(unique(colData(gene_expr)$celltypes)),
+                   dimnames  = list(rownames(p2g_scores),
+                   unique(colData(gene_expr)$celltypes)))
+
+
+# fill matrix
+for (celltype in unique(colData(gene_expr)$celltypes)){
+  barcodes <- rownames(colData(gene_expr) %>% 
+                         as.data.frame() %>% 
+                         filter(celltypes == celltype))
+  expr_agg[, celltype] <- rowSums(genes[, barcodes])
+}
+
+
+
+p2g_score_agg <- matrix(data = 0, 
+                        nrow = dim(p2g_scores)[1],
+                        ncol = length(unique(colData(gene_expr)$celltypes)),
+                        dimnames = list(rownames(p2g_scores),
+                                        unique(colData(gene_expr)$celltypes)))
+
+for (celltype in unique(colData(gene_expr)$celltypes)){
+  barcodes <- rownames(colData(gene_expr) %>% 
+                         as.data.frame() %>% 
+                         filter(celltypes == celltype))
+  p2g_score_agg[, celltype] <- rowSums(p2g_scores[, barcodes])
+}
+```
+
+
+
+
+Correlations between aggregated gene expression and aggregated p2g scores for 
+celltypes.
+
+
+
+```{r}
+correlations_250kb = c()
+for (i in seq.int(dim(p2g_score_agg)[1])){
+  rowa <- expr_agg[i, ]
+  rowa <- rowa - mean(rowa)
+  rowa <- rowa / sd(rowa)
+  
+  rowb <- p2g_score_agg[i, ]
+  rowb <- rowb - mean(rowb)
+  rowb <- rowb / sd(rowb)
+  
+  corr_value = mean(rowa * rowb)
+  correlations_250kb <- c(correlations_250kb, corr_value)
+  
+} 
+names(correlations_250kb) <- rownames(p2g_score_agg)
+
+plot_250kb <- ggplot() + geom_histogram(aes(x = correlations_250kb), bins = 200, fill="#69b3a2") +
+  labs("gene activity scores computed based on p2g links within 250kb of gene")
+plot_250kb
+```
+
+
+
+
+# Functions
+
+### Function to prep peak accessibility matrix, gene expression matrix and p2g-link matrix
+
+```{r}
+prep_peak_p2g <- function(peak_mat, p2g_mat, hvg_list, expr_mat){
+  #rownames(peak_mat) <- seq.int(dim(peak_mat)[1])
+  #colnames(p2g_mat) <- seq.int(dim(p2g_mat)[2])
+  
+  # remove columns of peaks which are not linked to any peak
+  p2g_mat_sub <- p2g_mat[, colSums(p2g_mat) != 0]
+  # use only highly variable genes
+  p2g_mat_sub <- p2g_mat_sub[hvg_list, ]
+  # remove any genes which are not linked to any peak
+  p2g_mat_sub <- p2g_mat_sub[rowSums(p2g_mat_sub) != 0, ]
+  stopifnot(all(rownames(p2g_mat_sub) %in% hvg_list))
+  stopifnot(any(is.na(p2g_mat_sub) == FALSE))
+  
+  # keep only peaks which are linked to genes in the accessibility matrix
+  peak_mat_sub <- peak_mat[colnames(p2g_mat_sub), ]
+  stopifnot(rownames(peak_mat_sub) == colnames(p2g_mat_sub))
+  stopifnot(any(is.na(peak_mat_sub) == FALSE))
+  stopifnot(dim(peak_mat_sub)[1] == dim(p2g_mat_sub)[2])
+  
+  expr_mat_sub <- expr_mat[as.vector(rownames(p2g_mat_sub)), ]
+  stopifnot(rownames(expr_mat_sub) == rownames(p2g_mat_sub))
+  return(list(peak_mat_sub, p2g_mat_sub, expr_mat_sub))
+}
+```
+
+
+
+
+### Function to create celltype aggregates:
+
+```{r}
+# the data matrix needs to be of dimension features x cells
+# the column of the colData of the sce object where celltypes are stored
+# needs to be called "celltypes"
+create_celltype_aggregates <- function(sce, data_matrix, celltypes) {
+  #create empty matrix to store aggregates
+  agg <- matrix(data = 0,
+                nrow = dim(data_matrix)[1],
+                ncol = length(celltypes),
+                dimnames = list(rownames(data_matrix), celltypes))
+  
+
+  for (celltype in celltypes) {
+    barcodes <- rownames(colData(sce) %>%
+                           as.data.frame() %>%
+                           filter(celltypes == celltype))
+    agg[, celltype] <- rowSums(data_matrix[, barcodes])
+  }
+  return(agg)
+}
+
+
+create_celltype_aggregates_p2g_scores <- function(gene_expr_sce, p2g_score_matrix, celltypes) {
+    #create empty matrix to store aggregates
+  agg <- matrix(data = 0,
+                nrow = dim(p2g_score_matrix)[1],
+                ncol = length(celltypes),
+                dimnames = list(rownames(p2g_score_matrix), celltypes))
+  
+
+  for (celltype in celltypes) {
+    barcodes <- rownames(colData(gene_expr_sce) %>%
+                           as.data.frame() %>%
+                           filter(celltypes == celltype))
+    agg[, celltype] <- rowSums(p2g_score_matrix[, barcodes])
+  }
+  return(agg)
+}
+
+```
+
+
+
+### Function to compute row-wise correlations between two matrices:
+
+```{r}
+rowwise_correlations <- function(MatrixA, MatrixB, name) {
+  correlations <- c()
+  for (i in seq.int(dim(MatrixA)[1])) {
+    rowA <- MatrixA[i, ]
+    rowA <- rowA - mean(rowA)
+    rowA <- rowA / sd(rowA)
+    
+    rowB <- MatrixB[i, ]
+    rowB <- rowB - mean(rowB)
+    rowB <- rowB / sd(rowB)
+    
+    corr_value <- mean(rowA * rowB)
+    correlations <- c(correlations, corr_value)
+  }
+  names(correlations) <- rownames(MatrixA)
+  plot <- ggplot() + geom_histogram(aes(x = correlations), 
+                                    bins = 200, 
+                                    fill="#69b3a2") + labs(title = paste0(name))
+  return(list(correlations, plot))
+}
+```
+
+
+
+```#{r}
+name <- "score_250kb"
+
+corr_p2g_250kb <- rowwise_correlations(expr_agg, p2g_score_agg, name)
+print(corr_p2g_250kb[2])
+```
+
+
+```#{r}
+name <- "score_250kb"
+prep <- prep_peak_p2g(peak_mat, p2g_mat, hvg_list)
+peak_mat_sub <- prep[[1]]
+p2g_mat_sub <- prep[[2]]
+expr_mat_sub <- prep[[3]] 
+p2g_scores <- gene_activity_scores(peak_mat_sub, p2g_mat_sub)
+expr_agg <- create_celltype_aggregates(gene_expr, expr_mat_sub, 
+                                       unique(colData(gene_expr)$celltypes))
+p2g_score_agg <-  create_celltype_aggregates_p2g_scores(gene_expr, p2g_scores, 
+                                            unique(colData(gene_expr)$celltypes))
+corrs <- rowwise_correlations(expr_agg, p2g_score_agg, name)
+correlation_vector <- corrs[1]
+print(corrs[2])
+```
+
+
+```{r}
+
+
+
+
+archr_scores_sub <- archr_scores_mat[as.vector(rownames(expr_agg)), ]
+
+name <- "ArchR_scores"
+
+archr_scores_agg <- create_celltype_aggregates(archr_scores, archr_scores_sub, 
+                                               unique(colData(archr_scores)$celltypes))
+stopifnot(any(is.na(archr_scores_agg)) == FALSE)
+
+corrs <- rowwise_correlations(expr_agg, archr_scores_agg, name)
+archr_corr <- corrs[1]
+cowplot::plot_grid(plot_250kb + labs(title = "P2g-links activity scores"), corrs[[2]], ncol = 2)
+```
+
+
+
+```{r, fig.width = 8, fig.height=8}
+ggplot() + #geom_density2d_filled(aes(x = correlations_250kb, y = corrs[1])) #+
+  geom_point(aes(x = correlations_250kb, y = corrs[[1]]))
+
+
+ggplot() + geom_point(aes(x = archr_scores_sub["Hba-a1",], y = p2g_scores["Hba-a1",]))
+ggplot() + geom_point(aes(x = archr_scores_sub["Gata6",], y = p2g_scores["Hba-a1",]))
+
+```
+
+
+
+
+
+
+
+# Distance weights
+
+```{r}
+
+
+resize(atac_granges, )
+
+atac_granges <- metadata(p2g)[[1]] 
+
+  geneRegions$geneStart <- start(resize(geneRegions, 1, "start"))
+  geneRegions$geneEnd <- start(resize(geneRegions, 1, "end"))
+  # in the ranges column we want to have the gene start coordinates
+  geneRegions <- resize(geneRegions, 1, "start")
+
+
+
+
+
+
+  as.data.frame() %>% 
+  mutate(idx = seq.int(nrow(.))) %>%
+  filter(idx %in% colnames(p2g_mat)) %>%
+  mutate(mid)
+  
+
+
+  atac_granges <- metadata(p2g_original)[[1]]
+  #rna_granges <- metadata(p2g_original)[[2]]
+  gene_anno <- rowData(gene_expr)
+  
+  # create gene annotations with start coordinate of each gene
+  # subset to contain only genes which are included in our peak2gene matrix
+  gene_anno <- gene_anno %>% as.data.frame() %>% 
+    filter(name %in% rownames(p2g_mat)) %>%
+    mutate(strand = ifelse(strand == 1, "+", "-")) %>%
+    mutate(start_coord = ifelse(strand == "+", start, end)) %>% 
+    rename(gene = name) %>%
+    GRanges()
+
+  # subset atac granges & get middle of each peak
+  pos_atac_granges <- atac_granges  %>% 
+    as.data.frame() %>%
+    group_by(seqnames) %>%
+    mutate(idx = seq_along(seqnames)) %>% 
+    ungroup %>%
+    tidyr::unite(chr_idx, seqnames, idx, remove = FALSE, sep = "_") %>% 
+    filter(chr_idx %in% colnames(p2g_mat)) %>% 
+    mutate(middle = start + 300) %>%
+    GRanges() 
+```
+
+# Example restricting links to Gene window 
+
+Lets check whether the results we got previously also yield high correlations. In
+this case, using all p2g links across the entire chromsome, we computed
+gene activity scores, but restricting links to within a gene window of +/- 100kb.
+
+```{r}
+
+test <- readH5AD("jupyter_notebooks/p2g_gene_activity_scores/gene_window_scoresgene_window_scores")
+
+p2g_scores <- assays(test)[[1]]
+
+# cp_names <- colnames(colData(gene_expr))
+# cp_names[20] <- "celltypes"
+# colnames(colData(gene_expr)) <- cp_names
 
 rownames(expr_mat) <- rowData(gene_expr)$name
 genes <- expr_mat[as.vector(rownames(p2g_scores)), ]
@@ -237,7 +618,7 @@ for (celltype in unique(colData(gene_expr)$celltypes)){
 Correlations between aggregated gene expression and aggregated p2g scores:
 
 ```{r}
-correlations = c()
+correlations_gene_window = c()
 for (i in seq.int(dim(p2g_score_agg)[1])){
   rowa <- expr_agg[i, ]
   rowa <- rowa - mean(rowa)
@@ -248,14 +629,22 @@ for (i in seq.int(dim(p2g_score_agg)[1])){
   rowb <- rowb / sd(rowb)
   
   corr_value = mean(rowa * rowb)
-  correlations <- c(correlations, corr_value)
-  
+  correlations_gene_window <- c(correlations_gene_window, corr_value)
 } 
+names(correlations_gene_window) <- rownames(p2g_score_agg)
 
-ggplot() + geom_histogram(aes(x = correlations), bins = 200)
+
+ggplot() + geom_histogram(aes(x = correlations_gene_window), bins = 200) +
+  labs(title = "Gene activity scores computed based on p2g links on entire chromosome, 
+       but restricted to +/-100kb gene window around TSS")
 ```
 
+```{r, fig.width = 8, fig.height=8}
+correlations_gene_window_sub <- correlations_gene_window[names(correlations_250kb)]
 
+ggplot() + #geom_density2d_filled(aes(x = correlations_250kb, y = corrs[1])) #+
+  geom_point(aes(x = correlations_250kb, y = correlations_gene_window_sub))
+```
 
 ```#{r}
 
