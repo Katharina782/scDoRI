@@ -749,7 +749,8 @@ totalGS <- ArchR:::.safelapply(seq_along(geneRegions), function(z){ # we loop ov
         stop("Error in gene boundaries minError")
       }
 
-      idx2 <- which(pmaxGene + pForwardMin > end(extendedGeneRegion))
+      idx2 <- which(pmaxGene + pForwardMin > end(
+        extendedGeneRegion))
       if(length(idx2) > 0){
         stop("Error in gene boundaries maxError")
       }
