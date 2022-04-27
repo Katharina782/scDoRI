@@ -29,7 +29,7 @@ library(dtwclust)
 ```
 
 ```{r}
-proj <- loadArchRProject("11_added_Ricards_peaks", showLogo = FALSE)
+proj <- loadArchRProject("11_added_Ricards_peaks_p2g_entire_chromosome", showLogo = FALSE)
 ```
 
 ```#{r}
@@ -56,7 +56,7 @@ p2g <- getPeak2GeneLinks(
 ```{r}
 # saveRDS(p2g, "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/Rmds/peak2gene_links_entire_chromosome_25_04_2022")
 #saveRDS(p2g, "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/Rmds/new_peak2gene_links_22_04_2022")
-p2g <- readRDS("/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/Rmds/new_peak2gene_links_22_04_2022")
+p2g <- readRDS( "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/Rmds/peak2gene_links_entire_chromosome_25_04_2022")
 ```
 
 Read in the peak accessibility matrix and the gene expression matrix:
@@ -594,7 +594,7 @@ model_list <- c("exp(-abs(distance)/5000)", "exp(-abs(distance)/50000)",
                 "exp(-abs(distance)/500000)", "exp(-abs(distance)/5000000)")
 
 # read in knn
-rna_knn <- readRDS("11_added_Ricards_peaks/Peak2GeneLinks/seRNA-Group-KNN.rds")
+rna_knn <- readRDS("11_added_Ricards_peaks_p2g_entire_chromosome/Peak2GeneLinks/seRNA-Group-KNN.rds")
 cell_agg_list <- metadata(rna_knn)[[1]]
 
 
@@ -1162,7 +1162,7 @@ Try distance weights
 
 
 ```{r}
-rna_knn <- readRDS("11_added_Ricards_peaks/Peak2GeneLinks/seRNA-Group-KNN.rds")
+rna_knn <- readRDS("11_added_Ricards_peaks_p2g_entire_chromosome/Peak2GeneLinks/seRNA-Group-KNN.rds")
 #rna_agg_mat <- assays(rna_knn)[[1]]
 #rownames(rna_agg_mat) <- rowData(rna_knn)$name
 
