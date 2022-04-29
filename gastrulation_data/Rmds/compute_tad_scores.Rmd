@@ -1,0 +1,77 @@
+---
+title: "tad_scores"
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(cache = FALSE)
+knitr::opts_knit$set(root.dir = "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data")
+setwd("/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data")
+set.seed(1)
+```
+
+```{r}
+suppressPackageStartupMessages({
+
+library(ArchR)
+library(tidyverse)
+library(SingleCellExperiment)
+library(zellkonverter)
+library(dtwclust)
+})
+```
+
+```{r}
+tad_boundaries <- as.data.frame(read.table("jupyter_notebooks/tad_e75.bed", header = FALSE, sep = "\t", stringsAsFactors = FALSE, quote = ""))
+tad_boundaries <- tad_boundaries %>% 
+  rename(seqnames = V1, start = V2, end = V3) %>% 
+  GRanges()
+```
+
+
+
+## ArchR Gene Activity Scores using TAD boundaries
+
+```{r}
+proj <- loadArchRProject("12_Copy2/")
+
+```
+
+
+```{r}
+proj <- addTADGeneScoreMatrix(
+  proj,
+  genes = getGenes(proj),
+  peaks = getPeakSet(proj),
+  tadBoundaries = tad_boundaries,
+  geneModel = "exp(-abs(x)/5000) + exp(-1)",
+  matrixName = "GeneScoreMatrix",
+  extendUpstream = c(1000, 100000),
+  extendDownstream = c(1000, 100000),
+  geneUpstream = 5000, #New Param
+  #geneDownstream = 0, #New Param
+  useGeneBoundaries = FALSE,
+  useTSS = FALSE, #New Param
+  extendTSS = FALSE,
+  tileSize = 500,
+  ceiling = 4,
+  geneScaleFactor = 5, #New Param
+  scaleTo = 10000,
+  excludeChr = c("chrY", "chrX", "chrM"),
+  blacklist = getBlacklist(proj),
+  threads = 1,
+  parallelParam = NULL,
+  subThreading = TRUE,
+  force = TRUE,
+  logFile = createLogFile(".addTADGeneScoreMat"))
+
+
+
+scores <- getMatrixFromProject(proj, useMatrix = "GeneScoreMatrix")
+score_mat <- assays(scores)[[1]]
+rownames(scores_mat) <- rowData(scores)$name
+
+saveRDS(scores, "tad_scores")
+```
+

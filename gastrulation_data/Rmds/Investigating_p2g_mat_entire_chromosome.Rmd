@@ -751,9 +751,8 @@ for (model in model_list){
   geom_line(aes(x = dist_knn[[1]], y = dist_knn[[1]]), col = "red") +
   theme(legend.position = "None")  +
   labs(x = "Correlation between gene expression and p2g activity scores",
-        title = paste0(model),
-        y = "Correlation between gene expression and ArchR gene activity scores",
-       title = "KNN aggregates")
+        title = paste0(model, "KNN aggregates"),
+        y = "Correlation between gene expression and ArchR gene activity scores")
   print(plot)
 }
 
@@ -762,7 +761,7 @@ for (model in model_list){
 
 ## SEAcells 
 
-```{r}
+```{r, fig.width=8, fig.height=5}
 # prepare lists to store correlation vectors and correlation histograms
 corr_list <- list(seacell_corr_archr[[1]], seacell_corr_p2g[[1]])
 
@@ -787,8 +786,8 @@ for (model in model_list){
   plot <- ggplot() + #geom_density_2d_filled(aes(x = corr_list[[i]], 
                       #                y = corr_list[[1]]), alpha = .5) +
   geom_point(aes(x = dist_knn[[1]], y = corr_list[[1]])) +
-  geom_density_2d_filled(aes(x = corr_list[[1]],
-                             y = dist_knn[[1]]), alpha = 0.5) +
+  geom_density_2d_filled(aes(x = dist_knn[[1]],
+                             y = corr_list[[1]]), alpha = 0.5) +
   geom_line(aes(x = corr_list[[1]], y = corr_list[[1]]), col = "red") +
   theme(legend.position = "None")  +
   labs(x = "Correlation between gene expression and p2g activity scores",
@@ -924,7 +923,9 @@ compute_gene_window_score <- function(p2g_mat_sub, peak_mat, links, p2g_original
     ggplot() +
     geom_boxplot(aes(x = bin, y = Correlation), fill = "#69b3a2") +
     labs(title = "Distance and Correlation within gene window, 1000bp bins",
-         x = "Distance (1000bp bins)")
+         x = "Distance (1000bp bins)") +
+  scale_x_discrete(guide = guide_axis(angle = 90)) 
+
   print(cowplot::plot_grid(p1, p2, p3, ncol = 1))
   
   
@@ -1002,11 +1003,7 @@ compute_gene_window_score <- function(p2g_mat_sub, peak_mat, links, p2g_original
   # 
   # print(p2)
   # #cowplot::plot_grid(p1, p2, ncol = 1)
-  
-  
-  corr_window$ColIndex <- match(corr_window$idxATAC, unique(corr_window$idxATAC))
-  corr_window$RowIndex <- match(corr_window$gene, unique(corr_window$gene))
-  
+
   p2g_links_gene_window <- Matrix::sparseMatrix(
       i = corr_window$idxRNA, 
       j = corr_window$idxATAC, 
@@ -1034,9 +1031,9 @@ compute_gene_window_score <- function(p2g_mat_sub, peak_mat, links, p2g_original
 }
 ```
 
-## KNN aggregates
+### KNN aggregates
 
-```{r}
+```{r, fig.height=8, fig.width=10}
 gene_window_scores <- compute_gene_window_score(
   p2g_mat_sub = p2g_mat_sub, 
   peak_mat = peak_mat, 
@@ -1045,30 +1042,35 @@ gene_window_scores <- compute_gene_window_score(
   gene_expr = gene_expr)
 ```
 
+### KNN aggregates
+
+
 ```{r, fig.width=8, fig.height=5}
 weighted_scores_agg <- knn_aggregates(gene_window_scores, cell_agg_list)
 weighted_knn_corr <- rowwise_correlations(rna_agg, weighted_scores_agg,
                                           "P2g links within gene window")
 weighted_knn_corr[[2]]
 
-ggplot() + geom_density_2d_filled(aes(x = weighted_knn_corr[[1]], 
-                                   y = archr_knn[[1]][names(weighted_knn_corr[[1]])]), alpha = .5) +
-geom_point(aes(x = weighted_knn_corr[[1]], y = archr_knn[[1]][names(weighted_knn_corr[[1]])])) +
-geom_line(aes(x = weighted_knn_corr[[1]], y = weighted_knn_corr[[1]]), col = "red") +
-theme(legend.position = "None")  +
-labs(x = "Correlation between gene expression and p2g activity scores",
-      title = "Peak-to-gene links are restricted to a gene window of +/- 100kb around TSS",
-      y = "Correlation between gene expression and ArchR gene activity scores")
+ggplot() +
+  geom_density_2d_filled(aes(x = weighted_knn_corr[[1]], 
+                             y = archr_knn[[1]][names(weighted_knn_corr[[1]])]),
+                         alpha = .5) +
+  geom_point(aes(x = weighted_knn_corr[[1]], y = archr_knn[[1]][names(weighted_knn_corr[[1]])])) +
+  geom_line(aes(x = weighted_knn_corr[[1]], y = weighted_knn_corr[[1]]), col = "red") +
+  theme(legend.position = "None")  +
+  labs(x = "Correlation between gene expression and p2g activity scores",
+        title = "Peak-to-gene links are restricted to a gene window of +/- 100kb around TSS",
+        y = "Correlation between gene expression and ArchR gene activity scores")
 
 
 
 ```
 
 
-## SEACells
+### SEACells
 
 
-```{r}
+```{r, fig.width=8, fig.height=5}
 gene_window_agg <- create_seacell_aggregates(gene_window_scores, seacells)
 gene_window_corr <- rowwise_correlations(seacell_rna_agg, gene_window_agg,
                                          name = "Gene window around TSS")
@@ -1076,17 +1078,22 @@ gene_window_corr <- rowwise_correlations(seacell_rna_agg, gene_window_agg,
 gene_window_corr[[2]]
 
 
-geom_point(aes(x = gene_window_corr[[1]], y = corr_list[[1]])) +
-geom_density_2d_filled(aes(x = corr_list[[1]],
-                           y = gene_window_corr[[1]]), alpha = 0.5) +
-geom_line(aes(x = corr_list[[1]], y = corr_list[[1]]), col = "red") +
-theme(legend.position = "None")  +
-labs(x = "Correlation between gene expression and p2g activity scores, gene window",
-      title = paste0(model, "SEACells"),
-      y = "Correlation between gene expression and ArchR gene activity scores")
-print(plot)
+ggplot() +
+  geom_point(aes(x = gene_window_corr[[1]],
+                 y = seacell_corr_archr[[1]][names(gene_window_corr[[1]])])) +
+  geom_density_2d_filled(aes(
+    y = seacell_corr_archr[[1]][names(gene_window_corr[[1]])],
+    x = gene_window_corr[[1]]), alpha = 0.5) +
+  geom_line(aes(x = seacell_corr_archr[[1]][names(gene_window_corr[[1]])], 
+                y = seacell_corr_archr[[1]][names(gene_window_corr[[1]])]), 
+            color = "red") +
+  theme(legend.position = "None")  +
+  labs(x = "Correlation between gene expression and p2g activity scores, gene window",
+        y = "Correlation between gene expression and ArchR gene activity scores",
+       title = "Peak-to-gene links within gene window")
 
 ```
+
 # Effect of using different distance decay rates 
 
 How does the distance weight distribution change with different decay rates?
@@ -1134,7 +1141,8 @@ p2g_join <- left_join(p2g_join, as.data.frame(gene_anno),
 
 # compute distance and distance weights 
 p2g_join <- p2g_join %>% 
-  mutate(distance = abs(start_coord - middle))# %>%
+  mutate(distance = abs(start_coord - middle)) %>%
+  mutate(rel_distance = start_coord - middle)
  # mutate(distance_weight = eval(parse(text=geneModel)))
 
 for (model in model_list){ 
@@ -1208,7 +1216,7 @@ cowplot::plot_grid(p1, p2, p3, ncol = 2)
 
 ```{r, fig.width=10}
 p2g_join %>%  
-  mutate(bin=cut_width(distance, width=10000, boundary=0)) %>%
+  mutate(bin=cut_width(distance, width=100000, boundary=0)) %>%
   filter(distance < 10000000) %>% 
   ggplot() +
   geom_boxplot(aes(x = bin, y = Correlation), fill="#69b3a2") +
@@ -1260,6 +1268,20 @@ p4 <- p2g_join %>%
 cowplot::plot_grid(p1, p2, p3, p4, ncol = 2)
 ```
 
+Lets have a look at correlation values between peaks within the promoter region
+of a TSS, namely 5kb upstream of the TSS.
+
+```{r, fig.width=8}
+p2g_join %>%  
+  mutate(bin=cut_width(rel_distance, width=100, boundary=0)) %>%
+  filter(rel_distance < 0 & rel_distance >= -5000) %>% 
+  ggplot() +
+  geom_boxplot(aes(x = bin, y = Correlation), fill="#69b3a2") +
+  #geom_vline(xintercept  = 250000, color = "red") +
+  labs(title = "Distance -5kb upstream of TSS, 100bp bins",
+       x = "Distance -5kb upstream of TSS", y = "Correlation") + 
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+```
 
 
 ### Try distance decay rates
@@ -1322,7 +1344,7 @@ cowplot::plot_grid(p1, p2, ncol = 2)
 
 # TAD boundaries
 
-```#{r}
+```{r}
 tad_boundaries <- as.data.frame(read.table("jupyter_notebooks/tad_e75.bed", header = FALSE, sep = "\t", stringsAsFactors = FALSE, quote = ""))
 tad_boundaries <- tad_boundaries %>% 
   rename(seqnames = V1, start = V2, end = V3) %>% 
@@ -1338,15 +1360,65 @@ p1 <- ggplot() + geom_histogram(aes(x = width(gene_anno %>% GRanges())),
 
 p2 <- ggplot() + geom_histogram(aes(x = width(tad_boundaries)), bins = 200) +
   geom_vline(xintercept = median(width(tad_boundaries)), color = "orange") +
-  labs(title = "Distribution of TAD boundary size, median size = ",
-       median(width(tad_boundaries)),
+  labs(title = paste0("Distribution of TAD boundary size, median size = ",
+       median(width(tad_boundaries))),
       x = "TAD boundary size in bp")
 
 cowplot::plot_grid(p1, p2, ncol = 1)
 ```
 
+```{r, fig.width=8}
 
-```#{r, fig.width=15}
+colPalette_celltypes = c('#532C8A',
+ '#c19f70',
+ '#f9decf',
+ '#c9a997',
+ '#B51D8D',
+ '#3F84AA',
+ '#9e6762',
+ '#354E23',
+ '#F397C0',
+ '#ff891c',
+ '#635547',
+ '#C72228',
+ '#f79083',
+ '#EF4E22',
+ '#989898',
+ '#7F6874',
+ '#8870ad',
+ '#647a4f',
+ '#EF5A9D',
+ '#FBBE92',
+ '#139992',
+ '#cc7818',
+ '#DFCDE4',
+ '#8EC792',
+ '#C594BF',
+ '#C3C388',
+ '#0F4A9C',
+ '#FACB12',
+ '#8DB5CE',
+ '#1A1A1A',
+ '#C9EBFB',
+ '#DABE99',
+ '#65A83E',
+ '#005579',
+ '#CDE088',
+ '#f7f79e',
+ '#F6BFCB')
+
+tad_boundaries %>% as.data.frame() %>% group_by(seqnames) %>% 
+  summarise(n = n()) %>% ungroup() %>%  
+  ggplot() + geom_col(aes(x = seqnames, y = n, fill = seqnames), alpha = .7, ) +#, position = "dodge")
+  theme(legend.position = "None") +
+  scale_fill_manual(values = colPalette_celltypes) +
+  labs(y = "number of tad boundaries")
+```
+
+
+TODO: Should I also remove peaks which are across TAD boundaries?
+
+```{r, fig.width=15, fig.height=10}
 # As input for this function it is best to use only the most highly variable genes
 tad_boundaries_p2g_scores <- function(p2g_mat_sub, peak_mat, links, p2g_original, gene_expr, tad_boundaries){
   atac_granges <- metadata(p2g_original)[[1]]
@@ -1397,150 +1469,92 @@ tad_boundaries_p2g_scores <- function(p2g_mat_sub, peak_mat, links, p2g_original
   tad_overlaps_genes <- tad_overlaps_genes %>% as.data.frame %>% 
     filter(queryHits %in% within_genes) #%>% S4Vectors::as()
   
-  tad_overlaps_peaks <- suppressWarnings(findOverlaps(pos_atac_granges) %>% GRanges(),
-                                         tad_boundaries)
+  # get peaks overlapping with tad boundaries
+  tad_overlaps_peaks <- suppressWarnings(findOverlaps(pos_atac_granges %>% GRanges(),
+                                         tad_boundaries))
   
+  # filter for peaks overlapping tad boundaries which also contain genes
+  tad_overlaps_peaks <- tad_overlaps_peaks %>% as.data.frame() %>% 
+    filter(subjectHits %in% tad_overlaps_genes$subjectHits)
+  
+  # combine tad boundaries which contain genes and peaks
+  tad_combine <- left_join(tad_overlaps_genes, tad_overlaps_peaks, 
+                           copy = TRUE, by = "subjectHits", suffix = c(".gene", ".peak"))
+  
+  
+  genes <- gene_anno[tad_combine$queryHits.gene, ] %>%
+    mutate(tad_index = tad_combine$subjectHits)
+  
+  peak_coll <- pos_atac_granges[tad_combine$queryHits.peak, ] %>% 
+    mutate(tad_index = tad_combine$subjectHits)
+  
+  gene_peak_tad_df <- left_join(genes, peak_coll, by = "tad_index", suffic = c(".gene", ".peak")) %>%  unite(peak_gene_tad, gene, idxATAC, sep = "#", remove = FALSE)
+
+
   
   ### some plots
-  p1 <- (tmp %>% as.data.frame() %>% 
-         group_by(queryHits) %>% # gene region
+  p1 <- (tad_overlaps_peaks  %>% as.data.frame() %>% 
+         group_by(subjectHits) %>% # gene region
          summarize(n = n()) %>% # get number of peaks overlapping with a gene region
          ggplot() + geom_histogram(aes(x = n), bins = 100, fill="#69b3a2") +
-         labs(title = "number of peaks per gene region of size +/- 100kb from TSS",
-             x = "number of peaks within window",))
+         labs(title = "Number of peaks per tad boundary",
+             x = "number of peaks"))
+  
+  p2 <- (tad_overlaps_genes  %>% as.data.frame() %>% 
+       group_by(subjectHits) %>% # gene region
+       summarize(n = n()) %>% # get number of peaks overlapping with a gene region
+       ggplot() + geom_histogram(aes(x = n), bins = 100, fill="#69b3a2") +
+       labs(title = "Number of hvg genes per tad boundary",
+           x = "number of genes"))
+  
+  print(cowplot::plot_grid(p1, p2, ncol = 2))
   
   
-  
-  # combine the three dataframes
+  # combine the annotation dataframe with the p2g links dataframe
   p2g_join <- left_join(links, as.data.frame(pos_atac_granges),
                         by = "idxATAC")
   p2g_join <- left_join(p2g_join, as.data.frame(gene_anno),
                         by = "idxRNA", suffix = c(".atac", ".rna"))
 
-  # compute distance and distance weights 
+  # compute distance 
   p2g_join <- p2g_join %>% 
-    mutate(distance = abs(start_coord - middle))# %>%
-   # mutate(distance_weight = eval(parse(text=geneModel)))
+    mutate(distance = abs(start_coord - middle))
   
-  
-  p2 <- p2g_join %>% ggplot() +
-    geom_histogram(aes(x = distance), bins = 100) +
-    labs(title = "Distance", x = "distance") +
-    geom_vline(xintercept  = 100000, color = "red") 
-
-  
-  # p2 <- p2g_join %>% ggplot() +
-  #   geom_histogram(aes(x = (distance_weight)), bins = 100) +
-  #   scale_y_log10() +
-  #   labs(title = "Distance Weights", x = "distance weights") 
-
-  print(cowplot::plot_grid(p1, p2, ncol = 2))#),  ncol = 2))
-  
-  
-  
-  
-    
-  # create a dataframe of all peaks which overlap their corresponding gene window
-  peaks_in_gene_window <- data.frame(gene = gene_regions[queryHits(tmp)]$gene, 
-             peak = (pos_atac_granges %>% GRanges())[subjectHits(tmp)]$idxATAC) %>% 
-    unite(peak_gene_window, gene, peak, sep = "#", remove = FALSE)
-  
-  # filter the p2g link dataframe for only peaks which are within a gene window
-  corr_window <- p2g_join %>%
-    unite(peak_gene_window, gene, idxATAC, sep = "#", remove = FALSE) %>%
-    filter(peak_gene_window %in% peaks_in_gene_window$peak_gene_window) 
-
+  # filter for the p2g links within tad boundaries
+  corr_tad_boundary <- p2g_join %>% 
+    unite(peak_gene_tad, gene, idxATAC, sep = "#", remove = FALSE) %>% 
+    filter(peak_gene_tad %in% gene_peak_tad_df$peak_gene_tad)
 
   ### PLOTS
   
-  p1 <- corr_window %>% 
+  p1 <- corr_tad_boundary %>% 
     ggplot() +
     geom_histogram(aes(x = Correlation), bins = 200, fill = "#69b3a2") +
-    labs(title = "Correlation values of peaks found within gene windows")
+    labs(title = "Correlation values of peak-to-gene links found within tad boundaries")
   
-  p2 <- corr_window %>% 
+  p2 <- corr_tad_boundary %>% 
     ggplot() +
     geom_histogram(aes(x = distance), bins = 200, fill = "#69b3a2") +
-    labs(title = "Distance between peaks and genes found within gene windows and TSS")
+    labs(title = "Distance between peaks and TSS within tad boundary")
   
-  p3 <- corr_window %>% 
-    mutate(bin = cut_width(distance, width=10000, boundary=0)) %>% 
+  p3 <- corr_tad_boundary %>% 
+    mutate(bin = cut_width(distance, width=100000, boundary=0)) %>% 
     ggplot() +
     geom_boxplot(aes(x = bin, y = Correlation), fill = "#69b3a2") +
-    labs(title = "Distance and Correlation within gene window, 1000bp bins",
-         x = "Distance (1000bp bins)")
+    labs(title = "Distance and Correlation within tad boundary, 100kb bins",
+         x = "Distance (100kb bins)") +
+    scale_x_discrete(guide = guide_axis(angle = 90)) 
+
   print(cowplot::plot_grid(p1, p2, p3, ncol = 1))
   
-  
-  p1 <- ggplot() + 
-    geom_histogram(aes(x = rowSums(p2g_mat_sub > 0)), bins = 200, fill = "#69b3a2") +
-    scale_y_log10() +
-    labs(title = "# peaks correlated with each gene", 
-         x = "number of peaks", y = "log10(count)") 
-    
-  
-  p2 <- ggplot() + 
-    geom_histogram(aes(x = colSums(p2g_mat_sub > 0)), bins = 70, fill = "#69b3a2") +
-    scale_y_log10() +
-    labs(title = "# genes correlated with each peak",
-         y = "log10(count)", x = "number of genes")
-  
-  p3 <- ggplot() + 
-    geom_histogram(aes(x = rowSums(p2g_mat_sub > 0)), bins = 200, fill = "#69b3a2") +
-    labs(title = "# peaks correlated with each gene", 
-         x = "number of peaks", y = "count") 
-    
-  
-  p4 <- ggplot() + 
-    geom_histogram(aes(x = colSums(p2g_mat_sub > 0)), bins = 70, fill = "#69b3a2") +
-    labs(title = "# genes correlated with each peak",
-         y = "count", x = "number of genes")
-  
-  print(cowplot::plot_grid(p1, p2, p3, p4, ncol = 2))
 
-  
 
-  
-  
-  
-  peak_middle_region <- pos_atac_granges %>% GRanges()
-  # add the half width to the start of each peak
-  start(peak_middle_region) = start(peak_middle_region) + 
-    floor(width(peak_middle_region) / 2)
-  # resize the ranges so we only have the middle of each peak
-  peak_middle_region <- resize(peak_middle_region, 1, "start")
-  
-  # compute the distances between peak middle and gene TSS of all peaks which 
-  # overlap with a gene window
-  distance <- distance(ranges(gene_regions)[queryHits(tmp)], 
-                ranges(resize(peak_middle_region, width = 1))[subjectHits(tmp)])
-  
-  
-  ### PLOT
-  # p1 <- ggplot() + geom_histogram(aes(x = distance), bins = 200) +
-  #   scale_y_log10() +
-  #   labs(title = "Distance between peak middle and gene TSS within a gene window",
-  #        y = "log10(count)") +
-  #   geom_vline(xintercept = 100000, color = "red")
-  
-  
-  
-  isMinus <- BiocGenerics::which(strand(gene_regions) == "-")
-  # subtract the gene start coordinate from the tile start coordinate -> relative distances
-  signDist <- sign(start(peak_middle_region)[subjectHits(tmp)] - 
-                     start(resize(gene_regions,1,"start"))[queryHits(tmp)])
-  # convert the direction of distance for all distances corresponding to the negative strand
-  signDist[isMinus] <- signDist[isMinus] * -1
-  
-  
-  distance <- distance * signDist
-  
-  
   
   #### PLOT
-  p2 <- ggplot() + geom_histogram(aes(x = distance), bins = 500) + 
+  p2 <- corr_tad_boundary %>% ggplot() +
+    geom_histogram(aes(x = distance), bins = 500) + 
     scale_y_log10() +
-    labs(title = "Relative distance of peaks to TSS within a gene window",
+    labs(title = "Relative distance of peaks to TSS within tad boundaries",
          x = "Relative distance to TSS", y = "log10(count)") + 
     geom_vline(xintercept = c(100000, -100000), color = "red")
   
@@ -1548,37 +1562,164 @@ tad_boundaries_p2g_scores <- function(p2g_mat_sub, peak_mat, links, p2g_original
   #cowplot::plot_grid(p1, p2, ncol = 1)
   
   
-  corr_window$ColIndex <- match(corr_window$idxATAC, unique(corr_window$idxATAC))
-  corr_window$RowIndex <- match(corr_window$gene, unique(corr_window$gene))
   
-  p2g_links_gene_window <- Matrix::sparseMatrix(
-      i = corr_window$idxRNA, 
-      j = corr_window$idxATAC, 
-      x = corr_window$Correlation, 
+  p2g_links_tad <- Matrix::sparseMatrix(
+      i = corr_tad_boundary$idxRNA, 
+      j = corr_tad_boundary$idxATAC, 
+      x = corr_tad_boundary$Correlation, 
       dims = c(nrow(expr_mat), nrow(peak_mat)),
       dimnames = list(rownames(expr_mat),rownames(peak_mat))
     )
   
-  print(paste0("The peak-to-gene links matrix, restricted to a +/- 100kb window around the TSS has dimensions ", split(dim(p2g_links_gene_window), 1)))
   
-  print(paste0("The maximum value is: ", max(p2g_links_gene_window), ", the minum value is: ", min(p2g_links_gene_window) ))
-  
+  print(paste0("The maximum value is: ", max(p2g_links_tad), ", the minum value is: ", min(p2g_links_tad) ))
   
   
-  p2g_links_gene_window <- p2g_links_gene_window[rowSums(p2g_links_gene_window) != 0, ]
-  p2g_links_gene_window <- p2g_links_gene_window[, colSums(p2g_links_gene_window) != 0]
   
-  print(paste0("After removing any rows and columsn which do not contain any links we are left with ", nrow(p2g_links_gene_window), " genes and ", ncol(p2g_links_gene_window), " peaks."))
+  p2g_links_tad <- p2g_links_tad[rowSums(p2g_links_tad) != 0, ]
+  p2g_links_tad <- p2g_links_tad[, colSums(p2g_links_tad) != 0]
+  
+  print(paste0("After removing any rows and columsn which do not contain any links we are left with ", nrow(p2g_links_tad), " genes and ", ncol(p2g_links_tad), " peaks."))
+  
+  
   # Compute gene activity scores
-  gene_window_scores <- gene_activity_scores(peak_mat_sub[colnames(p2g_links_gene_window), ], p2g_links_gene_window)
-  dim(gene_window_scores)
-
+  tad_scores <- gene_activity_scores(peak_mat_sub[colnames(p2g_links_tad), ], p2g_links_tad)
   
-  return(gene_window_scores) 
+  return(tad_scores) 
 }
 ```
 
+```{r}
+tad_scores <- tad_boundaries_p2g_scores(p2g_mat_sub = p2g_mat_sub,
+                                        peak_mat = peak_mat,
+                                        links = links, 
+                                        p2g_original = p2g, 
+                                        gene_expr = gene_expr,
+                                        tad_boundaries = tad_boundaries)
+```
+
+
+```{r, fig.width=8, fig.height=5}
+gene_window_agg <- create_seacell_aggregates(tad_scores, seacells)
+gene_window_corr <- rowwise_correlations(seacell_rna_agg, gene_window_agg,
+                                         name = "Gene window around TSS")
+
+gene_window_corr[[2]]
+
+
+ggplot() +
+  geom_point(aes(y = seacell_corr_archr[[1]][names(gene_window_corr[[1]])], 
+                 x =gene_window_corr[[1]]))  +
+  geom_density_2d_filled(aes(y = seacell_corr_archr[[1]][names(gene_window_corr[[1]])],
+                             x = gene_window_corr[[1]]), alpha = 0.5) +
+  geom_line(aes(x = seacell_corr_archr[[1]][names(gene_window_corr[[1]])], 
+                y = seacell_corr_archr[[1]][names(gene_window_corr[[1]])], 
+                color = "red")) +
+  theme(legend.position = "None")  +
+  labs(x = "Correlation between gene expression and p2g activity scores, tad boundary",
+        y = "Correlation between gene expression and ArchR gene activity scores", 
+       title = "Peak-to-gene links within tad boundaries")
+
+```
+```{r, fig.width=8, fig.height=5}
+ggplot() +
+  geom_point(aes(y = seacell_corr_p2g[[1]][names(gene_window_corr[[1]])], 
+                 x =gene_window_corr[[1]]))  +
+  geom_density_2d_filled(aes(y = seacell_corr_p2g[[1]][names(gene_window_corr[[1]])],
+                             x = gene_window_corr[[1]]), alpha = 0.5) +
+  geom_line(aes(x = seacell_corr_p2g[[1]][names(gene_window_corr[[1]])], 
+                y = seacell_corr_p2g[[1]][names(gene_window_corr[[1]])], 
+                color = "red")) +
+  theme(legend.position = "None")  +
+  labs(x = "Correlation, tad boundaries",
+        y = "Correlation, all p2g links ", 
+       title = "Peak-to-gene links within tad boundaries vs. all links")
+```
+
+
+
+
+
+
 # Adapted Archr Gene Activity Score function
+
+ArchR provides a function to compute gene activity scores based on accessibility 
+in the regions around the gene. For this a tile matrix is used. This tile matrix 
+is a matrix where the genome is divided into bins of 500bp. If there is a
+Tn5 insertion in a bin the entry will be 1, if there is no insertion the entry
+will be 0. Importantly, they compared their function to 52 other functions
+and found their own function to be the best performing. 
+
+Here I tried to better understand how this function works and changed the source code of the ArchR function to also take peak matrix as input and compute the gene activity 
+based on peaks, rather than based on tiles. Additionally, I adapted the funciton 
+in a way such that it takes tad boundaries as input and uses all peaks which are 
+within the same tad boundary as a gene to compute the activity scores. 
+
+There are two different options for computing gene activity scores in ArchR. First,
+we can use the TSS and create a gene window around it (+/- 100kp of TSS). All 
+insertions found within tiles within this gene window will be accumulated for the
+gene activity scores. If we set the option 'useGeneBoundaries=TRUE' then we will 
+make sure that no regions overlap between any two genes. If the gene window of 
+one gene overlaps with the gene window of another gene, those tiles are not 
+considered anymore. The disadvantage of this approac is that genes can be very 
+large (>100bp), meaning that in some cases the 100kp extension downstream of the
+TSS would not even contain the entire gene body. 
+
+Second, we can use the entire gene body and extend the gene window beyond the start
+and end coordinates of the gene body. Importantly, the gene body is extended 5kb
+upstream of the TSS, to also include the promoter region. Using the entire gene 
+body instead of only the TSS can be achieved by setting 'useTSS=FALSE'. In this 
+approach the gene window is created by extending -100kb upstream of the TSS -5kb
+and +100kb downstream of the gene end coordinate. This way, the entire gene body 
+will be included in the gene window. An unwanted consequence of this might be
+that very large genes could bias the gene activity scores. Therefore ArchR 
+introduces a weight for the inverse of the gene body size according to:
+
+$w = \frac{1}{gene size}$ with $w$ being the inverse of the gene size.
+$
+
+geneRegions$geneWeight <- 1 + m * (geneScaleFactor - 1) / (max(m) - min(m))
+
+
+## ArchR Gene Activity Scores using TAD boundaries
+
+```{r}
+proj <- loadArchRProject("12_Copy2/")
+
+proj <-  addTADGeneScoreMatrix (
+  input = proj,
+  genes = getGenes(proj),
+  peaks = getPeakSet(proj),
+  tadBoundaries = tad_boundaries,
+  geneModel = "exp(-abs(x)/5000) + exp(-1)",
+  matrixName = "GeneScoreMatrix",
+  extendUpstream = c(1000, 100000),
+  extendDownstream = c(1000, 100000),
+  geneUpstream = 5000, #New Param
+  geneDownstream = 0, #New Param
+  useGeneBoundaries = FALSE,
+  useTSS = FALSE, #New Param
+  extendTSS = FALSE,
+  tileSize = 500,
+  ceiling = 4,
+  geneScaleFactor = 5, #New Param
+  scaleTo = 10000,
+  excludeChr = c("chrY", "chrM"),
+  blacklist = getBlacklist(input),
+  threads = getArchRThreads(),
+  parallelParam = NULL,
+  subThreading = TRUE,
+  force = TRUE,
+  logFile = createLogFile(".addTADGeneScoreMat")
+  )
+
+scores <- getMatrixFromProject(proj, useMatrix = "GeneScoreMatrix")
+score_mat <- assays(scores)[[1]]
+rownames(scores_mat) <- rowData(scores)$name
+
+saveRDS(scores, "tad_scores")
+```
+
 
 ## ArchR Gene Activity Scores using gene body
 
