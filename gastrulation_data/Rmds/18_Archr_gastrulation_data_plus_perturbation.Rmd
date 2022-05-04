@@ -1,0 +1,817 @@
+---
+title: "ArchR pre-processing - gastrulation dataset (+ perturbations)"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 5
+    code_folding: hide
+    toc_float: true
+    code_download: true
+    theme: cosmo
+    highlight: textmate
+---
+
+<style>
+body {
+text-align: justify}
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(cache = FALSE, autodep = TRUE, 
+                      collapse = TRUE, message = FALSE)
+knitr::opts_knit$set(root.dir = "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/")
+setwd("/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/")
+
+set.seed(1)
+```
+
+  
+```{r}
+## Load libraries
+
+
+suppressPackageStartupMessages(library(ArchR))
+library(knitr)
+library(rhdf5)
+library(uwot)
+library(tidyverse)
+library(scater)
+library(zellkonverter)
+library(corrplot)
+#library(caret)
+h5disableFileLocking()
+```
+  
+  
+The scATAC-seq dataset contains two replicates each from 4 stages of mouse 
+gastrulation, E7.5, E8.0, E8.5 and E8.75. We will use the mm10 Genome, because 
+that is the genome.
+
+```{r}
+# names of gastrulation stages
+stages <- c("E7.5_rep1", "E7.5_rep2", "E8.0_rep1", "E8.0_rep2", 
+ "E8.5_rep1", "E8.5_rep2", "E8.75_rep1", "E8.75_rep2")
+
+# combine all raw fragment files
+inputFiles <- setNames(c("raw_files/E7.5_rep1_atac_fragments.tsv.gz",
+                       "raw_files/E7.5_rep2_atac_fragments.tsv.gz",
+                       "raw_files/E8.0_rep1_atac_fragments.tsv.gz",
+                       "raw_files/E8.0_rep2_atac_fragments.tsv.gz",
+                       "raw_files/E8.5_rep1_atac_fragments.tsv.gz",
+                       "raw_files/E8.5_rep2_atac_fragments.tsv.gz",
+                       "raw_files/E8.75_rep1_atac_fragments.tsv.gz",
+                       "raw_files/E8.75_rep2_atac_fragments.tsv.gz"),
+                       c("E7.5_rep1", "E7.5_rep2", "E8.0_rep1", "E8.0_rep2", 
+                         "E8.5_rep1", "E8.5_rep2", "E8.75_rep1", "E8.75_rep2"))
+```
+
+
+
+
+```{r}
+addArchRGenome("mm10")
+```
+
+## Create Arrow Files
+
+We will read in the accessible fragments from the fragments file. QC information
+is automatically computed for each cell. Based on visual inspection of TSS Enrichment
+score vs log10(nFrags) I used a threshold of at least 1000 unique fragments and
+a TSS Enrichment score of at least 2.75. At the beginning it is better to be less
+stringent, because we can still filter the data at a later stage. The cells are 
+filtered based on these threshold and data are stored in arrow files. Genome-wide
+tile matrices are created using 500-bp bins. The tile matrix T is binary matrix 
+and contains information whether in a particular 500-bp bin/tile i there were any insertions in a
+particular cell j.
+
+$T \in \mathbb{R}^{NXD}$ with $T_{i,j} = 1$ if an insertion is present in tile $i$
+and cell $j$. $T_{i,j} = 0$ if no insertion is present in that cell, meaning $T$ 
+is a binary matrix.
+
+In addition a GeneScoreMatrix is created. 
+
+I set the size of the maximum number of fragments included to 1e+07, instead
+of the default 1e+05, because we cut off some cells otherwise.
+
+```{r}
+ArrowFiles <- createArrowFiles(
+  inputFiles = inputFiles,
+  sampleNames = names(inputFiles),
+  minTSS =2.75, #Dont set this too high because you can always increase later
+  minFrags = 1000, # minimum number of mapped fragments required
+  # count matrix, instead of using peak it uses fixed-width sliding window of bins across the whole genome
+  addTileMat = TRUE, 
+  addGeneScoreMat = TRUE, # uses signal proximal to the TSS to estimate gene activity
+  subThreading = FALSE,
+  maxFrags = 1e+07,
+  minFragSize = 10,
+  maxFragSize = 2000,
+  QCDir = "new_ArchRobject/QualityControl",
+  force = FALSE, # change to TRUE if you want to ovewrite the files
+  # the length in bp that wraps around nucleosomes -> 
+    #identify fragments as sub-nucleosome spanning, mono-nucleosome spanning or multi-nucleosome spanning
+  nucLength = 147, 
+  # integer vector -> define region up/downstream of TSS to include as promoter region
+  # can be used to calculate e.g fraction of reads in promoter (FIP)
+  promoterRegion = c(2000, 100),
+  # parameters for computing TSS enrichment scores, window (bp) centered at TSS = 101
+  # flanking window = 2000 bp
+  # norm = size of flank window used for normalization = 100 bp
+  # accessibility within 101 bp surrounding the TSS will be normalized to accessibility
+  # in 100 bp bins from -2000:-1901bp and 1901: 2000
+  TSSParams = list(101, 2000, 100),
+  # which chromosomes to exclude form downstream analysis
+  # in human and mouse: mitochondrial DNA (chrM) and male sex chromosome (chrY)
+  # the fragments are still stored in the arrow files
+  excludeChr = c("chrM", "chrY"),
+  # number of chunks to divide chromosomes in -> low-memory parallelized reading of input files
+  nChunk = 5,
+  # name of field in input bam file containing the barcode tag information
+  bcTag = "qname",
+  offsetPlus = 4, # offset applied to + stranded Tn5 insertion -> account for precise Tn5 binding site
+  offsetMinus = -5, 
+  logFile = createLogFile("createArrows")
+)
+```
+
+
+
+
+## Inferring Doublets
+
+Should be removed, because they can interfere with downstream analysis.
+
+**Doublet detection-and-removal algorithm:**
+Heterotypic doublets are identified by generating a collection of synthetic doublets.
+These synthetic doublets are projected into low-dimensional embeddings. Searching
+for nearest neighbours to the synthetic doublets we can identify doublets in the
+dataset. This outperforms the prediction of doublets using fragment number
+(ROC-AUC). (Compared to demuxlet as ground truth)
+
+**We can also identify doublets in the scRNA-seq space if we have paired data
+and remove the cells in this way.**
+
+```{r}
+ArrowFiles <- setNames(c("E7.5_rep1.arrow", "E7.5_rep2.arrow", "E8.0_rep1.arrow",
+                         "E8.0_rep2.arrow", "E8.5_rep1.arrow", "E8.5_rep2.arrow",
+                         "E8.75_rep1.arrow", "E8.75_rep2.arrow"),
+                       c("E7.5_rep1", "E7.5_rep2", "E8.0_rep1", "E8.0_rep2", 
+                         "E8.5_rep1", "E8.5_rep2", "E8.75_rep1", "E8.75_rep2"))
+```
+
+
+
+
+## Create ArchRProject
+
+An ArchR Project is initialized with some important attributes:
+
+```{r}
+proj <- ArchRProject(
+  ArrowFiles = ArrowFiles, 
+  outputDirectory = "gastrArchROutput",
+  copyArrows = TRUE, #This is recommened so that you maintain an unaltered copy for later usage.
+  geneAnnotation = getGeneAnnotation(),
+  #genomeAnnotation = getGeneAnnotation(),
+  showLogo = FALSE
+)
+
+proj
+```
+
+```{r}
+
+proj <- loadArchRProject("08_ArchRobject_all_timepoints_added_gene_expr/")
+```
+
+
+```{r}
+# read in existing project, so we don't have to rerun the creation
+#saveArchRProject(proj, outputDirectory = "01_FirstQC_ArchRobject/", load = FALSE)
+
+#proj <- loadArchRProject(path = "01_FirstQC_ArchRobject/")
+```
+
+
+
+
+# Dimensionality reduction 
+
+
+Because we can have maximally two accessible alleles per cell, the scATAC-seq data
+is sparse. Therefore, the majority of accessible regions are not transposed, meaning 
+that most loci will have 0 accessible alleles. A zero could mean "non-accessible" 
+or "not sampled". For many analysis we can use a binarized matix. **Imporantly,**
+**the 1s have information, BUT the 0s do not!**
+
+A PCA would result in high inter-cell similarity at all 0 positions. An alternative
+approach for dimensionality reduction is a **layered dimensionality reduction**. First,
+**Latent Semantic Indexing (LSI)** is used. LSI is an approach from language
+processing. Different samples are the "documents" and different regions/peaks are
+the "words". 
+
+## Iterative LSI
+
+1. compute term frequency (depth normalization to 10,000 per single cell)
+
+$TF = \frac{C_{ij}}{F_{j}}$, the term frequency of $C_{ij}$ which is tiles i 
+in cell j and $F_{j}$ being the total number of tiles with insertions in cell j.
+
+2. Inverse document frequency 
+  * weights features by how often they occur 
+  * more weight to less frequent insertions
+
+$IDF_{i} =\log {\frac{N}{1 + DF_{i}}}$ with N being the total number of cells in the dataset 
+and $DF_{i}$ being the total number of cells (documents) in which the tile i is present.
+
+3. The term frequency TF is normalized by the inverse document frequncy IDF. 
+You get a $TF-IDF$ matrix (term frequency-inverse document frequency) which
+tells us how important a region/peak is to a sample. In other words you transform
+a binary matrix to a non-binary matrix.
+
+$TF-IDF = \log{1 + TF{ij}} * IDF_{i} * 10^{4}$
+
+4. SVD identifies the most valuable information across samples. Then 
+we can use these most valuable features to represent the data in a lower dimensional space
+5. Clusters are identified with Seurat's Shared Nearest Neighbor clustering
+6. Sum accessibility across all single cells in each cluster -> log-normalize
+7. Identify most variable features across the clusters
+8. repeat with most variable peaks as features
+
+With LSI we can reduce the dimensionality of the sparse insertion matrix to tens 
+or hundreds. Then UMAP or t-SNE can be used to visualize the data
+
+
+Unlike in scRNA-seq we cannot select the top highly variable features before 
+dimensionality reduction (high noise, low reproducibility). Rather the iterative 
+LSI approach first computes a LSI 
+on the most accessible tiles (this will identify clusters corresponding to the 
+major cell types). Then, ArchR computes the average accessibility across these 
+clusters across all features. Next, the most variable peaks across these clusters
+are identified. The most highly accessible peaks are the features of a new 
+round of LSI. We can set how many rounds of LSI we want to be peformed. 
+
+Using iterative LSI reduces batch effects. If you see some batch effects you could
+try to add more LSI iterations and start from a lower initial clustering 
+resolution. Also, the number of variable features can be lowered.  #
+
+
+```{r}
+proj <- addIterativeLSI(ArchRProj = proj, useMatrix = "TileMatrix", 
+                            name = "atac_LSI" )
+
+
+```
+
+
+## Clustering
+
+**Here we do not need to perform clustering, because we already have celltype
+annotations.**
+
+
+
+# Visualization
+
+We will add the celltype annotation from the processed data to our ArchR 
+project. Since we already have annotations, we do not need to perform clustering.
+
+```{r}
+
+proj <- addUMAP(ArchRProj = proj, reducedDims = "atac_LSI", 
+                     force = TRUE, verbose = FALSE)
+```
+
+
+Can we add a pca object by simply adding a folder including a pca matrix?
+
+```{r}
+
+proj <- addUMAP(ArchRProj = proj, reducedDims = "pca")
+```
+
+Add the celltype annotations to the ArchRobject
+
+```#{r}
+df <- colData(filt_proc_atac) %>% as.data.frame() %>% rownames_to_column("cell") #%>%
+  #filter(cell %in% filt_proj$cellNames)
+
+filt_proj <- addCellColData(
+  ArchRProj = filt_proj,
+  data = setNames(as.character(df$celltype.mapped_seurat), as.character(df$cell)),
+  name = "celltypes",
+  cells = df$cell
+)
+```
+
+
+
+```{r}
+# add custom colors
+
+
+colPalette_celltypes = c('#532C8A',
+ '#c19f70',
+ '#f9decf',
+ '#c9a997',
+ '#B51D8D',
+ '#3F84AA',
+ '#9e6762',
+ '#354E23',
+ '#F397C0',
+ '#ff891c',
+ '#635547',
+ '#C72228',
+ '#f79083',
+ '#EF4E22',
+ '#989898',
+ '#7F6874',
+ '#8870ad',
+ '#647a4f',
+ '#EF5A9D',
+ '#FBBE92',
+ '#139992',
+ '#cc7818',
+ '#DFCDE4',
+ '#8EC792',
+ '#C594BF',
+ '#C3C388',
+ '#0F4A9C',
+ '#FACB12',
+ '#8DB5CE',
+ '#1A1A1A',
+ '#C9EBFB',
+ '#DABE99',
+ '#65A83E',
+ '#005579',
+ '#CDE088',
+ '#f7f79e',
+ '#F6BFCB')
+
+celltypes <- (as.data.frame(getCellColData(filt_proj)) %>% group_by(celltypes) %>% 
+ summarise(n = n()))$celltypes
+
+col <- setNames(colPalette_celltypes, celltypes)
+```
+
+
+```{r, fig.width=10}
+df <- as_data_frame(cbind(getCellColData(filt_proj), getEmbedding(filt_proj)) ) %>%
+  rename(c(umap1 = atac_LSI_100000.UMAP_Dimension_1, umap2  = atac_LSI_100000.UMAP_Dimension_2))
+
+variables <- c("celltypes", "Sample", "nFrags", "DoubletScore")
+
+
+plot1 <- map(c("celltypes"), function(n){
+  ggplot() +
+  geom_point(aes(x = df %>% pull("umap1"), y = df %>% pull("umap2"), 
+                 col = df %>% pull(n)),  size = .8) +
+    guides(col=guide_legend(title=paste0(n))) +
+    scale_color_manual(values = col)+
+    xlab("umap1") +
+    ylab("umpa2") +
+    labs(title = paste0(n))
+})
+
+plots2 <- map(c("nFrags", "DoubletScore"), function(n){
+  ggplot() +
+  geom_point(aes(x = df %>% pull("umap1"), y = df %>% pull("umap2"), 
+                 col = df %>% pull(n)), size = .8) +
+    scale_color_viridis_c() +
+    guides(fill=guide_legend(title=paste0(n))) +
+    xlab("umap1") +
+    ylab("umpa2") +
+    labs(title = paste0(n))
+})
+
+plot3 <- map(c("Sample"), function(n){
+  ggplot() +
+  geom_point(aes(x = df %>% pull("umap1"), y = df %>% pull("umap2"), 
+                 col = df %>% pull(n)),  size = .8) +
+    guides(col=guide_legend(title=paste0(n))) +
+    xlab("umap1") +
+    ylab("umpa2") +
+    labs(title = paste0(n))
+})
+
+
+plot1
+```
+
+
+```{r, fig.width=15, fig.height=8}
+do.call(gridExtra::grid.arrange, c(plot3, plots2, ncol=3))#, nrow = 2))
+
+```
+
+
+
+```{r}
+#saveArchRProject(filt_proj, outputDirectory = "02_filtered_annotated_ArchRobject", load = FALSE)
+#saveArchRProject(filt_proj, outputDirectory = "05_newdata_ArchRObject/", load = FALSE)
+
+```
+
+
+TODO: Continue here!
+
+
+# Check gene scores for the different celltypes
+
+
+
+```{r}
+filt_proj <- addImputeWeights(filt_proj, reducedDims = "atac_LSI_100000")
+```
+
+```#{r}
+markerGenes  <- c(
+    "Dnmt3b",  # Epigblas
+    "Ptn", # Forebrain/Midbrain/Hindbrain
+    "Pou5f1", # Primitive Streak
+    "Myl7", # cardiomyocytes
+    "Hoxa10" #Allantois
+
+  )
+```
+
+```#{r, fig.height=10, fig.width=10}
+p <- plotEmbedding(
+    ArchRProj = filt_proj, 
+    colorBy = "GeneScoreMatrix", 
+    name = markerGenes, 
+    embedding = "UMAP",
+    imputeWeights = getImputeWeights(proj)
+)
+do.call(gridExtra::grid.arrange, c(p, ncol = 3))
+```
+
+
+
+# Visualizing Genome Browser Tracks
+
+Browse local chromatin accessibility at marker genes. Plot genome
+browser tracks per celltype 
+
+```#{r}
+p <- plotBrowserTrack(
+    ArchRProj = filt_proj, 
+    groupBy = "celltypes", 
+    geneSymbol = markerGenes, # the plot window is centered at the TSS
+    upstream = 50000,
+   
+     downstream = 50000
+)
+
+```
+
+
+
+    
+* Dnmt3b = Epiblast 
+* Ptn = Forebrain/Midbrain/Hindbrain
+* Pouf5f1 = Primitive Streak
+* Myl7 = cardiomyocytes
+* Hoxa10 = Allantois
+
+Since we group the cells accoring to celltype below and plot the average
+signal/accessibility. Since some signals are only expected in a subset of the
+embryonic stages, the signals might be diluted if we look at all stages at once
+and take the mean accessibility over different stages. It would probabl
+
+```#{r,fig.height=15, fig.width=10}
+for (elem in p){
+  grid::grid.newpage()
+  grid::grid.draw(elem)
+}
+
+```
+
+
+
+# Different Time points
+
+To differentiate between expression at different stages we will have to split
+the ArchR projects into 
+
+TODO
+
+# Combine with RNA-seq data
+
+Since we are using multiome data, we do not need to integrate the ATAC and RNA
+data, but we have both informations from the same cell. We will use the processed
+scRNA-seq data which we filtered to contain only the cells which overlap with 
+the cells in the ArchR object.
+
+Look here for more details on multiome analysis in ArchR:
+https://greenleaflab.github.io/ArchR_2020/Ex-Analyze-Multiome.html
+
+One interesting thing to notice is that the number of genes in the gene score 
+matrix is different from the number of genes in the RNA dataset.
+
+I get an error when trying to extract the tile matrix. Not sure what is happening
+there. 
+
+```{r}
+gene_score_mat <- assays(gene_scores)[[1]]
+
+# set names of the gene score matrix
+rownames(gene_score_mat) <- rowData(gene_scores)$name
+```
+
+
+
+```{r}
+print(paste0("The number of genes in the ATAC-seq Gene Score Matrix is: ",
+             nrow(gene_score_mat)))
+
+print(paste0("The number of genes in the RNA-seq Gene Expression Matrix is: ",
+             dim(filt_proc_rna)[1]))
+
+print(paste0("The number of genes found in both the Gene Expression Matrix and the Gene Score Matrix:", 
+      length(intersect(rownames(gene_score_mat), rownames(filt_proc_rna)))))
+```
+
+
+Filter genes which are found in gene score matrix and gene expression matrix. Reorder
+cell names to match between gene scores and gene expression. Here it would
+be nice to show VennDiagrams to quickly be able to understand what the differences
+in genes are between ArchR object and gene expression matrix. Is there a way
+to include also genes which do not overlap?
+
+```{r}
+# Try to reorder the cellnames to the 
+
+# this is the order of the cell names in the ArchR project gene score matrix
+order <- rownames(getCellColData(filt_proj))
+
+# extract the gene expression matrix 
+rna_counts <- assays(filt_proc_rna)[[1]]
+
+# reorder gene expression matrix cell names to match the cellnames of the ArchR object
+rna_counts <- rna_counts[, order]
+
+# I checked that they are the same
+#colnames(rna_counts) == rownames(getCellColData(filt_proj))
+
+# get the gene names of the gene score matrix
+genes <- rownames(gene_score_mat)
+
+# subset the gene expression matrix to obtain only the genes found in the gene 
+# score matrix
+rna_counts <- rna_counts[rownames(rna_counts) %in% genes,]
+gene_score_mat <- gene_score_mat[rownames(gene_score_mat) %in% rownames(rna_counts),]
+
+
+rm(genes)
+rm(proc_atac)
+rm(proc_rna)
+```
+
+Next we have to create a GRanges object which will be used in the next step to 
+create a RangedSummarizedExperiment. When using the gene annotation metadata
+stored in the rowData of the RNA-SCE for creating this RangedSummarizedExperiment
+with the ArchRobject, I got an error message. This might have been due to the
+fact that the gene annotations looked different between the RNA-SCE and the ArchR
+object. Therefore, I tried using the same gene annotation as ArchR uses. In order 
+for this to work, we will have to exclude any genes which are not used by ArchR.
+
+```#{r}
+# get the Granges object from the Archr project
+archr_granges <-getGenes(filt_proj)
+
+# filter for genes which are included in the gene expression matrix
+granges <- subset(archr_granges, symbol %in% rownames(rna_counts))
+```
+
+
+
+
+We will now add the gene expression matrix to the ArchR object. First, we have to 
+convert the Single Cell Experiment to a Summarized Experiment.
+
+```#{r}
+# create summarized experiment of the scRNA-seq
+seRNA <- SummarizedExperiment(assays = list(counts=rna_counts),
+                          colData = colnames(filt_proc_rna),
+                          rowRanges = granges)
+seRNA
+
+
+# add RNA gene expression matrix to the ArchR object
+#filt_proj <- addGeneExpressionMatrix(input = filt_proj, seRNA = seRNA, force = TRUE)
+
+
+# save the ArchR object with the added gene expression matrix
+#saveArchRProject(filt_proj, outputDirectory = "08_ArchRobject_all_timepoints_added_gene_expr/", load = FALSE)
+```
+
+
+
+
+```{r}
+marker_genes <- c("Lamb1", "Plat", "Sparc", "Elf5", "Ascl2", "Tfap2c", "Ttr",
+                  "Apoa2", "Apoe", "Cystm1", "Emb", "Spink1", "Amot", "Krt19")
+```
+
+
+```#{r}
+p <- plotEmbedding(
+    ArchRProj = filt_proj, 
+    colorBy = "GeneScoreMatrix", 
+    name = marker_genes, 
+    embedding = "UMAP",
+    quantCut = c(0.01, 0.95),
+    imputeWeights = NULL
+)
+```
+
+
+```#{r}
+p <- plotEmbedding(
+    ArchRProj = filt_proj, 
+    colorBy = "GeneScoreMatrix", 
+    name = marker_genes, 
+    embedding = "UMAP",
+    quantCut = c(0.01, 0.95),
+    imputeWeights = NULL
+)
+```
+
+
+### Visualize the gene activity scores
+
+```{r}
+heatmap(as.matrix(gene_score_mat[1:5, 1:5]))
+
+print(paste0("Minimum gene score: ", min(gene_score_mat)))
+print(paste0("Maximum gene score: ", max(gene_score_mat)))
+
+```
+
+```{r}
+print(paste0("Number of genes in the gene activity score matrix: ", dim(gene_score_mat)[[1]]))
+```
+
+
+```{r}
+tibble(gene = rownames(gene_score_mat),
+          mean = Matrix::rowMeans(gene_score_mat),
+          var = MatrixGenerics::rowVars(gene_score_mat)) %>% 
+  mutate(log10_mean = log10(mean),
+         log10_var = log10(var)) %>% ggplot() +
+  geom_point(aes(x = log10_mean, y = log10_var)) +
+  labs(title = "Gene activity score from scATAC-seq")
+
+```
+
+
+### Visualize the raw gene expression counts
+
+```{r}
+print(paste0("Number of genes in gene expression matrix: ", dim(rna_counts)[[1]]))
+```
+
+
+```{r}
+tibble(gene = rownames(rna_counts),
+          mean = Matrix::rowMeans(rna_counts),
+          var = MatrixGenerics::rowVars(rna_counts)) %>% 
+  mutate(log10_mean = log10(mean),
+         log10_var = log10(var)) %>% ggplot() +
+  geom_point(aes(x = log10_mean, y = log10_var)) +
+  labs(title = "Gene expression raw counts")
+```
+
+
+Normalize the RNA counts using log2 transformation:
+
+1. normalize by library size
+2. scale with factor 1000
+3. add pseudocount
+4. log transform 
+
+```#{r}
+norm_rna <- Matrix::t(Matrix::t(rna_counts) /
+                        Matrix::colSums(rna_counts))
+
+#scaling factor = 1000
+sc_factor <- 1e4
+
+# add pseudocount of 1
+lognorm_rna <- (log(norm_rna * sc_factor + 1))
+```
+
+
+```#{r}
+tibble(gene = rownames(lognorm_rna),
+          mean = Matrix::rowMeans(lognorm_rna),
+          var = rowVars(lognorm_rna)) %>% 
+  mutate(log10_mean = log10(mean),
+         log10_var = log10(var)) %>% ggplot() +
+  geom_point(aes(x = log10_mean, y = log10_var)) +
+  labs(title = "Gene expression log-normalized RNA expression")
+```
+
+
+
+### Correlation between gene activity score and gene expression:
+
+```#{r}
+marker_genes <- c("Lamb1", "Plat", "Sparc", "Elf5", "Ascl2", "Tfap2c", "Ttr",
+                  "Apoa2", "Apoe", "Cystm1", "Emb", "Spink1", "Amot", "Krt19")
+```
+
+
+```#{r, fig.width=10, fig.height=15}
+plots <- map(marker_genes, function(n){
+plot <- tibble(gene_expr = lognorm_rna[n, ], 
+       gene_score = gene_score_mat[n, ]) %>% 
+  ggplot(aes( x = gene_expr,y = gene_score)) + geom_point() +
+    geom_smooth(formula = y ~ x, method = "lm", size=0.1) 
+
+})
+
+
+gridExtra::grid.arrange(grobs = plots, ncol = 3)
+
+test <- cor(rna_counts["Apoe", ], gene_score_mat["Lamb1", ])
+test
+```
+
+```{r}
+
+```
+
+
+
+```#{r}
+plot <- tibble(gene_expr = lognorm_rna["Lamb1", ], 
+       gene_score = gene_score_mat["Lamb1", ]) %>% 
+  ggplot(aes( x = gene_expr,y = gene_score)) + geom_point() +
+  geom_smooth(formula = y ~ x, method = "lm", size=0.1) 
+  #ggpubr::stat_cor(aes(label = ..r.label..), method = "pearson", r.digits=2)
+  
+plot
+```
+
+
+```#{r}
+test <- ArchR::getMatrixFromProject(filt_proj, useMatrix = "GeneExpressionMatrix")
+
+colData(test) %>% as.data.frame %>% colnames() %>% tail(1) %>% print()
+
+filt_proj <- addIterativeLSI(
+    ArchRProj = filt_proj, 
+    clusterParams = list(
+      resolution = 0.2, 
+      sampleCells = 10000,
+      n.start = 10
+    ),
+    saveIterations = FALSE,
+    useMatrix = "GeneExpressionMatrix", 
+    depthCol = "Gex_nUMI",
+    varFeatures = 2500,
+    firstSelection = "variable",
+    binarize = FALSE,
+    name = "LSI_RNA"
+)
+ArchR::getCellColData(filt_proj) %>% as.data.frame()
+```
+
+
+```#{r}
+filt_proj <- addIterativeLSI(
+  ArchRProj = filt_proj, 
+  saveIterations = FALSE,
+  clusterParams  = list(
+    resolution = 0.2,
+    sampleCells = 10000,
+    n.start = 10
+  ),
+  useMatrix = "GeneExpressionMatrix",
+  depthCol = "Gex_nUMI",
+  varFeatures = 100000, 
+  firstSelection = "Var", 
+  binarize = FALSE,
+  name = "LSI_RNA"
+)
+```
+
+
+Now we will combine the two embeddings.
+
+```#{r}
+#Combined Dims
+proj <- addCombinedDims(proj, reducedDims = c("LSI_ATAC", "LSI_RNA"), name =  "LSI_Combined")
+
+#UMAPs
+proj <- addUMAP(proj, reducedDims = "LSI_ATAC", name = "UMAP_ATAC", minDist = 0.8, force = TRUE)
+
+proj <- addUMAP(proj, reducedDims = "LSI_RNA", name = "UMAP_RNA", minDist = 0.8, force = TRUE)
+
+proj <- addUMAP(proj, reducedDims = "LSI_Combined", name = "UMAP_Combined", minDist = 0.8, force = TRUE)
+
+
+```
+

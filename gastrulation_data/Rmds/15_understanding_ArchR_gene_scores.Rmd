@@ -1457,7 +1457,7 @@ ArrowFiles =  getArrowFiles(proj)
 genes = getGenes(proj)
 peaks = getPeakSet(proj)
 tadBoundaries = tad_boundaries
-geneModel = "exp(-abs(x)/5000)"
+geneModel = "exp(-abs(x)/5000) + exp(-1)"
 matrixName = "GeneScoreMatrix"
 extendUpstream = c(1000, 100000)
 extendDownstream = c(1000, 100000)
@@ -1470,7 +1470,7 @@ tileSize = 500
 ceiling = 4
 geneScaleFactor = 5 #New Param
 scaleTo = 10000
-excludeChr = c("chrY","chrM")
+excludeChr = c("chrY", "chrX", "chrM")
 blacklist = getBlacklist(proj)
 cellNames = NULL
 allCells = NULL
@@ -1539,6 +1539,7 @@ seqlevels(geneRegions) <- as.character(unique(seqnames(geneRegions)))
 geneRegions <- geneRegions[!is.na(mcols(geneRegions)$symbol)]
 print(paste0("After removing missing gene names, we are left with ", length(geneRegions), " genes"))
 seqlevels(peakRegions) <- as.character(unique(seqnames(peakRegions)))
+seqlevels(tadBoundaries) <- as.character(unique(seqnames(tadBoundaries)))
 
 #Create Gene Regions Then Remove Strand Column
 if(useTSS){
@@ -1641,7 +1642,7 @@ tstart <- Sys.time()
 
 
 
-```{r}
+```{r, fig.width=8, fig.height=5}
 
   #########################################################################################################
   #First we will write gene scores to a temporary path! rhdf5 delete doesnt actually delete the memory!
@@ -1757,14 +1758,15 @@ totalGS <- ArchR:::.safelapply(seq_along(geneRegions), function(z){ # we loop ov
       
       
       for (i in seq.int(length(geneRegionz))){
-        #print(i)
+        print(i)
         overlap <- findOverlaps(geneRegionz[i], tadboundz)
-        #print(overlap)
+        print(overlap)
         if (length(overlap) == 0){
-          next
+          geneRegionz[i]$geneStart = start(geneRegionz[i])
+          geneRegionz[i]$geneEnd = end(geneRegionz[i])
         }
-        stopifnot(length(subjectHits(overlap)) <= 2)
-        if (length(subjectHits(overlap)) == 1){
+        #stopifnot(length(subjectHits(overlap)) <= 2)
+        else if (length(subjectHits(overlap)) == 1){
           geneRegionz[i]$geneStart = start(tadboundz[subjectHits(overlap)])
           geneRegionz[i]$geneEnd = end(tadboundz[subjectHits(overlap)])
         } else {
@@ -1777,13 +1779,13 @@ totalGS <- ArchR:::.safelapply(seq_along(geneRegions), function(z){ # we loop ov
         }
       }
       
-      
-      test <- geneRegionz
-      start(ranges(test) ) <- test$geneStart
-      
+      extendedGeneRegion <- geneRegionz
+      start(ranges(extendedGeneRegion)) <- extendedGeneRegion$geneStart
+      end(ranges(extendedGeneRegion)) <- extendedGeneRegion$geneEnd
+       
       # first we extend the gene region -> IRanges object, which contains start 
       # and end of the 200,000 bp gene regions/windows (+/- 100,000 from TSS) 
-      extendedGeneRegion <- ranges(suppressWarnings(extendGR(geneRegionz, upstream = max(extendUpstream), downstream = max(extendDownstream))))
+      #extendedGeneRegion <- ranges(suppressWarnings(extendGR(geneRegionz, upstream = max(extendUpstream), downstream = max(extendDownstream))))
 
     }
     
@@ -1791,17 +1793,17 @@ totalGS <- ArchR:::.safelapply(seq_along(geneRegions), function(z){ # we loop ov
     # each row of tmp contains index of GeneRegion and the index of Tiles with 
     # which it overlaps
     # convert peakRegionz to IRanges object as well
-    tmp <- suppressWarnings(findOverlaps(extendedGeneRegion, ranges(peakRegionz)))
+    tmp <- suppressWarnings(findOverlaps(extendedGeneRegion, GRanges(peakRegionz)))
     
     print(paste0("In total there are ", 
-                 subjectLength(tmp), " peaks overlapping with gene regions found on this chromosome"))
+                 subjectLength(tmp), " peaks overlapping with tad boundaries found on this chromosome"))
     print(paste0("The total number of peaks found on this chromosome is ", length(peakRegionz)))
     
     print(tmp %>% as.data.frame() %>% 
       group_by(queryHits) %>% # gene region
       summarize(n = n()) %>% # get number of peaks overlapping with a gene region
       ggplot() + geom_bar(aes(x = n)) +
-      labs(title = "number of peaks per gene region of size +/- 100kb from TSS", x = "number of peaks"))
+      labs(title = "number of peaks per gene within tad boundary", x = "number of peaks"))
     
     # by extracting the indices of genes and tiles which overlap and computing 
     # the distances between them we get for each match the distance between gene and tile
@@ -1809,12 +1811,13 @@ totalGS <- ArchR:::.safelapply(seq_along(geneRegions), function(z){ # we loop ov
     # we want to compute the distance to the peak middle
     peak_middle_region <- peakRegionz
     start(peak_middle_region) = start(peak_middle_region) + floor(width(peak_middle_region) / 2)
+    peak_middle_region <- resize(peak_middle_region, width = 1, fix = "start")
     
     x <- distance(ranges(geneRegionz)[queryHits(tmp)], 
-                  ranges(resize(peakRegionz, width = 1))[subjectHits(tmp)])
+                  ranges(peak_middle_region)[subjectHits(tmp)])
     
     print(ggplot() + geom_histogram(aes(x = x), bins = 500) + 
-      labs(title = "Distribution of absolute distances between genes and tiles within a gene region",
+      labs(title = "Distribution of absolute distances between genes and peaks within a tad boudnary",
            x = "distance"))
     
 
@@ -1824,7 +1827,7 @@ totalGS <- ArchR:::.safelapply(seq_along(geneRegions), function(z){ # we loop ov
     # get Minus strand coordinates
     isMinus <- BiocGenerics::which(strand(geneRegionz) == "-")
     # subtract the gene start coordinate from the tile start coordinate -> relative distances
-    signDist <- sign(start(ranges(peakRegionz))[subjectHits(tmp)] - 
+    signDist <- sign(start(ranges(peak_middle_region))[subjectHits(tmp)] - 
                        start(resize(geneRegionz,1,"start"))[queryHits(tmp)])
     # convert the direction of distance for all distances corresponding to the negative strand
     signDist[isMinus] <- signDist[isMinus] * -1
@@ -1834,7 +1837,7 @@ totalGS <- ArchR:::.safelapply(seq_along(geneRegions), function(z){ # we loop ov
     x <- x * signDist
     
     print(ggplot() + geom_histogram(aes(x = x), bins = 500) + 
-      labs(title = "Distribution of relative distances between genes and tiles within a gene region",
+      labs(title = "Distribution of relative distances between genes and peaks within a tad boundary",
            x = "relative distance to TSS"))
     
     #Evaluate  Input Model -> compute distance weights

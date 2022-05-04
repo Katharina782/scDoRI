@@ -34,7 +34,7 @@ tad_boundaries <- tad_boundaries %>%
 ## ArchR Gene Activity Scores using TAD boundaries
 
 ```{r}
-proj <- loadArchRProject("12_Copy2/")
+proj <- loadArchRProject("12_Copy1/")
 
 ```
 
@@ -69,9 +69,11 @@ proj <- addTADGeneScoreMatrix(
 
 
 scores <- getMatrixFromProject(proj, useMatrix = "GeneScoreMatrix")
-score_mat <- assays(scores)[[1]]
-rownames(scores_mat) <- rowData(scores)$name
+saveRDS(scores, "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/tad_scores")
 
-saveRDS(scores, "tad_scores")
+#score_mat <- assays(scores)[[1]]
+#rownames(scores_mat) <- rowData(scores)$name
+
+#saveRDS(scores, "tad_scores")
 ```
 

@@ -1,0 +1,266 @@
+---
+title: "Investigating p2g links"
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(cache = FALSE)
+knitr::opts_knit$set(root.dir = "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data")
+setwd("/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data")
+
+set.seed(1)
+```
+
+```{r}
+suppressPackageStartupMessages({
+
+library(ArchR)
+library(tidyverse)
+library(SingleCellExperiment)
+library(zellkonverter)
+library(dtwclust)
+})
+```
+
+```{r}
+proj <- loadArchRProject("11_added_Ricards_peaks")
+```
+
+```#{r}
+proj <- addPeak2GeneLinks(ArchRProj = proj,
+  reducedDims  = "atac_LSI_100000",
+  useMatrix = "GeneExpressionMatrix",
+  maxDist = 250000,
+  verbose = TRUE
+  )
+
+p2g <- getPeak2GeneLinks(
+  ArchRProj = proj,
+  corCutOff = -1,
+  resolution = 1,
+  FDRCutOff = 1e-04,
+  varCutOffATAC = .25,
+  varCutOffRNA = .25, 
+  returnLoops = FALSE
+)
+```
+
+
+```{r}
+#saveRDS(p2g, "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/Rmds/new_peak2gene_links_22_04_2022")
+p2g <- readRDS("/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/Rmds/new_peak2gene_links_22_04_2022")
+```
+
+Read in the peak matrix:
+
+```{r}
+# get peak matrix
+peaks <- getMatrixFromProject(proj, useMatrix = "PeakMatrix", binarize = FALSE)
+peak_mat <- assays(peaks)[[1]]
+
+# read in gne expresssion matrix
+gene_expr <- getMatrixFromProject(proj, 
+                                  useMatrix = "GeneExpressionMatrix")
+expr_mat <- assays(gene_expr)[[1]]
+```
+
+```{r}
+hvg_list <- read.table("jupyter_notebooks/hvg_list", sep = ",")$x
+
+
+# get RNA index of hvg
+meta_rna <- rowData(gene_expr) %>% as.data.frame() %>% mutate(row_index = seq(nrow(.)))
+idx <- (meta_rna %>% filter(name %in% hvg_list))$row_index
+```
+
+
+
+Subsample the p2g links, so we only have a few exemplary links:
+
+```{r}
+sample_size <- 10e3
+links <- p2g %>% as.data.frame() %>% 
+  filter(idxRNA %in% idx) %>% 
+  slice_sample(n = min(sample_size, nrow(.)))
+  #slice_max(order_by = Correlation, n = min(sample_size, nrow(.)))
+```
+
+Aggregate the peak matrix  and gene expression matrix for celltypes.
+
+```{r}
+cp_names <- colnames(colData(peaks))
+cp_names[20] <- "celltypes"
+colnames(colData(peaks)) <- cp_names
+
+
+# aggregate peaks
+
+# create matrix to store peaks aggregated for each celltype
+peak_agg <- matrix(data = 0,
+                   nrow = dim(peaks)[1],
+                   ncol = length(unique(colData(peaks)$celltypes)),
+                   dimnames = list(NULL,
+                     unique(colData(peaks)$celltypes)))
+
+#celltype = "Erythroid3"
+for (celltype in unique(colData(peaks)$celltypes)){
+  barcodes <- rownames(colData(peaks) %>% 
+                         as.data.frame() %>% 
+                         filter(celltypes == celltype))
+  peak_agg[, celltype] <- rowSums(peak_mat[, barcodes])
+}
+
+peak_agg[1:5, 1:5]
+stopifnot(any(is.na(peak_agg)) == FALSE)
+
+
+# aggregate gene expression
+
+
+cp_names <- colnames(colData(gene_expr))
+cp_names[20] <- "celltypes"
+colnames(colData(gene_expr)) <- cp_names
+
+# create matrix to store aggregates
+expr_agg <- matrix(data = 0, 
+                   nrow = dim(expr_mat)[1],
+                   ncol = length(unique(colData(gene_expr)$celltypes)),
+                   dimnames  = list(rowData(gene_expr)$name,
+                   unique(colData(gene_expr)$celltypes)))
+
+stopifnot(all(colnames(expr_agg) == colnames(peak_agg)))
+
+all(colnames(peak_mat) == colnames(expr_mat))
+
+# fill matrix
+for (celltype in unique(colData(peaks)$celltypes)){
+  barcodes <- rownames(colData(gene_expr) %>% 
+                         as.data.frame() %>% 
+                         filter(celltypes == celltype))
+  expr_agg[, celltype] <- rowSums(expr_mat[, barcodes])
+}
+
+
+expr_agg[1:5, 1:5]
+stopifnot(any(is.na(expr_agg)) == FALSE)
+```
+
+Normalize the aggregated matrix & select subsampled peaks
+
+```{r}
+# lognormalize
+norm_peak_agg <- t(t(peak_agg) / colSums(peak_agg))
+norm_peak_agg <- log1p(norm_peak_agg * 1e4)
+
+# After normalizaton, extract the subsampled peaks from p2g links
+norm_peak_agg <- norm_peak_agg[links$idxATAC, ]
+norm_peak_agg <- norm_peak_agg - rowMeans(norm_peak_agg)
+norm_peak_agg <- norm_peak_agg / rowSds(norm_peak_agg)
+
+stopifnot(all(dplyr::near(rowVars(norm_peak_agg), 1)))
+stopifnot(all(dplyr::near(rowMeans(norm_peak_agg), 0)))
+
+norm_peak_agg[1:5, 1:5]
+```
+
+Create a heatmap of peak accessibility z scores
+
+```{r}
+cts <- c("Erythroid1", "Allantois", "Cardiomyocytes", "Gut")
+
+
+ht <- ComplexHeatmap::Heatmap(
+  matrix=norm_peak_agg, 
+  cluster_rows = T, 
+  cluster_columns = F, 
+  show_row_dend = F,
+  show_row_names = F,
+  row_title = "Peaks",
+  heatmap_legend_param = list(title = "Accessibility Z-Score",
+                              direction = "horizontal"),
+  column_names_side = c("top"),
+  column_names_gp = grid::gpar(fontsize = 8)
+)
+ht_rows <- ComplexHeatmap::draw(ht)
+```
+
+
+```{r}
+# get genes in the same order
+sign_rna <- expr_agg
+sign_rna <- log1p(t( t(sign_rna) / colSums(sign_rna)) * 1e4)
+sign_rna <- sign_rna[links$idxRNA[ComplexHeatmap::row_order(ht_rows)], ]
+sign_rna <- sign_rna - rowMeans(sign_rna)
+sign_rna <- sign_rna / rowSds(sign_rna)
+
+stopifnot(all(dplyr::near(rowVars(sign_rna), 1)))
+stopifnot(all(dplyr::near(rowMeans(sign_rna), 0)))
+stopifnot(any(is.na(sign_rna)) == FALSE)
+sign_rna[1:6, 1:6]
+
+
+ht_expr <- ComplexHeatmap::Heatmap(
+  matrix=sign_rna, #[, cts], 
+  cluster_rows = F, 
+  cluster_columns = F, 
+  show_row_dend = F,
+  show_row_names = F,
+  row_title = "Genes",
+  heatmap_legend_param = list(title = "Expression Z-Score",
+                            direction = "horizontal"),
+  column_names_side = c("top"),
+  column_names_gp = grid::gpar(fontsize = 8)
+)
+
+ComplexHeatmap::draw(ht_expr)
+
+ht + ht_expr
+```
+
+```#{r, fig.height=8, fig.width=4}
+library(grid)
+grid.newpage()
+pushViewport(viewport(layout = grid.layout(nr = 1, nc = 2)))
+pushViewport(viewport(layout.pos.row = 1, layout.pos.col = 1))
+ComplexHeatmap::draw(ht, newpage = FALSE, heatmap_legend_side="bottom")
+upViewport()
+
+pushViewport(viewport(layout.pos.row = 1, layout.pos.col = 2))
+ComplexHeatmap::draw(ht_expr, newpage = FALSE, heatmap_legend_side="bottom")
+upViewport()
+```
+
+
+
+```{r}
+# get genes in the same order
+sign_rna <- expr_agg
+sign_rna <- log1p(t( t(sign_rna) / colSums(sign_rna)) * 1e4)
+sign_rna <- sign_rna[links$idxRNA, ]
+sign_rna <- sign_rna - rowMeans(sign_rna)
+sign_rna <- sign_rna / rowSds(sign_rna)
+
+stopifnot(all(dplyr::near(rowVars(norm_peak_agg), 1)))
+stopifnot(all(dplyr::near(rowMeans(norm_peak_agg), 0)))
+stopifnot(any(is.na(sign_rna)) == FALSE)
+sign_rna[1:6, 1:6]
+
+
+ht_expr <- ComplexHeatmap::Heatmap(
+  matrix=sign_rna, #[, cts], 
+  cluster_rows = T, 
+  cluster_columns = F, 
+  show_row_dend = F,
+  show_row_names = F,
+  row_title = "Genes",
+  heatmap_legend_param = list(title = "Expression Z-Score",
+                            direction = "horizontal"),
+  column_names_side = c("top"),
+  column_names_gp = grid::gpar(fontsize = 8)
+)
+
+ComplexHeatmap::draw(ht_expr)
+```
+
+

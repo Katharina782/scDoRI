@@ -111,9 +111,13 @@ Prepare gene activity scores computed from p2g links:
 # rownames(gene_scores_mat) <- rowData(gene_scores)$name
 
 
-# use new gene scores based on positive peak2gene links
-gene_scores <- readH5AD("jupyter_notebooks/z_score_p2g_gene_activity_scores")
+gene_scores <- getMatrixFromProject(proj, useMatrix = "GeneScoreMatrix")
 gene_scores_mat <- assays(gene_scores)[[1]]
+rownames(gene_scores_mat) <- rowData(gene_scores)$name
+colnames(gene_scores_mat) <- colnames(gene_scores)
+# use new gene scores based on positive peak2gene links
+#gene_scores <- readH5AD("jupyter_notebooks/p2g_gene_activity_scores/z_score_p2g_gene_activity_scores")
+#gene_scores_mat <- assays(gene_scores)[[1]]
 
 
 
@@ -128,6 +132,39 @@ gene_scores_mat <- assays(gene_scores)[[1]]
 # sox9_score_p2g <- gene_scores_mat[rownames(gene_scores_mat) %in% c("Sox9"), ]
 # metadata["sox9_score_p2g"] <- sox9_score_p2g
 ```
+
+Prepare motif deviation scores computed using SEACells:
+
+
+```{r}
+dev <- readRDS("/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/jupyter_notebooks/SEACell_files/SEA_aggregates_to_R/SEACell_ChromVarDev")
+
+
+sea_archr_meta <- read_csv("/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/jupyter_notebooks/SEACell_files/archr_sea_metadata.csv")
+
+celltype_df <- sea_archr_meta %>%
+  dplyr::count(SEACell, celltypes) %>%
+  dplyr::group_by(SEACell) %>%
+  slice_max(order_by=n, n=1, with_ties = FALSE) %>% 
+  select(SEACell, celltypes)
+
+
+df <- colData(dev) %>% as.data.frame() %>% rownames_to_column("SEACell")
+df <- left_join(celltype_df, df, by = "SEACell")
+
+
+colData(dev) <- DataFrame(df)
+
+sea_mtx <- assays(dev)[[1]]
+
+
+sea_meta <- colData(dev) %>% as.data.frame()
+#tfs <- rownames(dev)
+#metadata <- colData(dev) %>% as.data.frame()
+
+
+```
+
 
 
 Color Palette:
@@ -206,6 +243,19 @@ marker_genes <- c("Lamb1",  "Sparc", "Elf5", "Ascl2", "Tfap2c", "Ttr",
 # "Gsc",
 ```
 
+```#{r}
+  p <- metadata %>%
+    mutate(!!n := motif_n) %>%
+    group_by(celltypes) %>%
+    #summarise_at(vars(n), funs(mean(., na.rm=TRUE)))
+    summarise(mean = mean(!!(sym(n)))) %>%
+    ggplot() +
+    geom_bar(aes(x = celltypes, y = mean, fill = celltypes), stat = "identity") +
+    scale_fill_manual(values = col) +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1), legend.position = "None") +#%>% print()
+    labs(title = paste0(n), y = "SEACell deviation score")
+  print(p)
+```
 
 
 # GATA Factors
@@ -214,19 +264,23 @@ marker_genes <- c("Lamb1",  "Sparc", "Elf5", "Ascl2", "Tfap2c", "Ttr",
 for (n in c("Gata1", "Gata2", "Gata3", "Gata4", "Gata5", "Gata6")) {
   print(n)
   # select one row for a particular gene
-  score_n <- gene_scores_mat[rownames(gene_scores_mat) %in% c(n), ]
+  score_n <- gene_scores_mat[rownames(gene_scores_mat) %in%  n, ]
   # add score for this gene to metadata
   metadata[paste0("score_",n)] <- score_n
   # select gene expression for a particular gene
   expr_n <- lognorm[rownames(lognorm) %in% c(n), ]
   metadata[paste0("expr_", n)] <- expr_n
+  
+  
+  seacells_n <- sea_mtx[rownames(sea_mtx) == tfs[grepl(paste0("^", n), tfs)], ]
+  sea_meta[paste0("seacell_", n)] <- seacells_n
 
   # select motif z score
   motif_n <- motif_mtx[rownames(motif_mtx) ==  tfs[grepl(paste0("^", n), tfs)], ]
   metadata[paste0("motif_", n)] <- motif_n
   
   # create barplots for gene scores, gene expression and motif z-score
-  plots <- map(c("score_", "expr_", "motif_"), function(p){
+  plots <- map(c("score_", "motif_"), function(p){
     df <- metadata %>%
     group_by(celltypes) %>%
     summarise_at(vars(paste0(p, n)), funs(mean(., na.rm=TRUE)))
@@ -238,7 +292,16 @@ for (n in c("Gata1", "Gata2", "Gata3", "Gata4", "Gata5", "Gata6")) {
           legend.position = "none") +
     labs(title = paste0(n), x = "celltype", y = paste0(p))
   })
-      
+  sea_plot <- map(seq.int(1), function(sea){
+    sea_meta %>% 
+    group_by(celltypes) %>%
+    summarise(mean = mean(!!sym(paste0("seacell_",n)))) %>%
+    ggplot() +
+    geom_bar(aes(x = celltypes, y = mean, fill = celltypes), stat = "identity") +
+    scale_fill_manual(values = col) +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1), legend.position = "None") +#%>% print()
+    labs(title = paste0(n), y = "SEACell deviation score")
+  })
   # create scatter plots for gene expression and motif z-score
   scatter_plots <- map(seq.int(1), function(s){
     df <- metadata %>% group_by(celltypes) %>% 
@@ -258,15 +321,15 @@ for (n in c("Gata1", "Gata2", "Gata3", "Gata4", "Gata5", "Gata6")) {
     scale_color_manual(values = col) +
     labs(title = paste0(n), x = "gene activity score", y = "TF-motif z-score")
     })
-  do.call(gridExtra::grid.arrange, c(plots, scatter_plots, ncol = 2, nrow = 2))
+  do.call(gridExtra::grid.arrange, c(plots, sea_plot, scatter_plots, ncol = 2))
 
 }
 ```
 
 # Marker Genes
 
+## SEACells
 
-Plot gene expression, gene scores & motif z-scores:
 
 ```{r, fig.width=10, fig.height=10}
 
@@ -279,6 +342,128 @@ for (n in marker_genes) {
   # select gene expression for a particular gene
   expr_n <- lognorm[rownames(lognorm) %in% c(n), ]
   metadata[paste0("expr_", n)] <- expr_n
+  
+  
+  seacells_n <- sea_mtx[rownames(sea_mtx) == tfs[grepl(paste0("^", n), tfs)], ]
+  sea_meta[paste0("seacell_", n)] <- seacells_n
+
+  # if the marker gene is a TF
+  if (length(tfs[grepl(paste0("^", n), tfs)]) > 0) {
+    
+      # select motif z score
+      motif_n <- motif_mtx[rownames(motif_mtx) ==  tfs[grepl(paste0("^", n), tfs)], ]
+      metadata[paste0("motif_", n)] <- motif_n
+      
+      # create barplots for gene scores, gene expression and motif z-score
+      plots <- map(c("score_", "motif_"), function(p){
+        df <- metadata %>%
+        group_by(celltypes) %>%
+        summarise_at(vars(paste0(p, n)), funs(mean(., na.rm=TRUE)))
+        df %>% ggplot() +
+        geom_bar(aes(x = celltypes, y = df %>% pull(paste0(p, n)), 
+                     fill = celltypes), stat = "identity") +
+        scale_fill_manual(values = col) +
+        theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+              legend.position = "none") +
+        labs(title = paste0(n), x = "celltype", y = paste0(p))
+      })
+      
+      # create scatter plots for gene expression and motif z-score
+      scatter_plots <- map(seq.int(1), function(s){
+        df <- metadata %>% group_by(celltypes) %>% 
+        summarise_at(vars(paste0("motif_", n), 
+                          paste0("score_", n)), 
+                     funs(mean(., na.rm = TRUE)))
+        df %>%
+        ggplot() +
+        geom_smooth(aes(x = df %>% pull(paste0("score_", n)), 
+                        y = df %>% pull(paste0("motif_", n))),
+                    formula = y ~ x, method = "lm", size = .1) +
+        geom_point(aes(x = df %>% pull(paste0("score_", n)), 
+                       y = df %>% pull(paste0("motif_", n)), 
+                       col = celltypes, size = 1)) +
+        #labs(x = "Gata1 gene expression", y = "Gata1 motif accessibility (z-score)") +
+        theme(legend.position = "none") +
+        scale_color_manual(values = col) +
+        labs(title = paste0(n), x = "gene activity score", y = "TF-motif z-score")
+        })
+        sea_plot <- map(seq.int(1), function(sea){
+      sea_meta %>% 
+      group_by(celltypes) %>%
+      summarise(mean = mean(!!sym(paste0("seacell_",n)))) %>%
+      ggplot() +
+      geom_bar(aes(x = celltypes, y = mean, fill = celltypes), stat = "identity") +
+      scale_fill_manual(values = col) +
+      theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1), legend.position = "None") +#%>% print()
+      labs(title = paste0(n), y = "SEACell deviation score")
+    })
+      
+    # if the marker gene is no TF
+    } else {
+      
+      # create barplots for gene scores, gene expression and motif z-score
+      plots <- map(c("score_"), function(p){
+        df <- metadata %>%
+        group_by(celltypes) %>%
+        summarise_at(vars(paste0(p, n)), funs(mean(., na.rm=TRUE)))
+        df %>% ggplot() +
+        geom_bar(aes(x = celltypes, y = df %>% pull(paste0(p, n)), 
+                     fill = celltypes), stat = "identity") +
+        scale_fill_manual(values = col) +
+        theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+              legend.position = "none") +
+        labs(title = paste0(n), x = "celltype", y = paste0(p))
+
+      })
+      
+      # create scatter plots for gene expression and gene_score
+      scatter_plots <- map(seq.int(1), function(s){
+        df <- metadata %>% group_by(celltypes) %>%
+        summarise_at(vars(paste0("score_", n),
+                          paste0("expr_", n)),
+                     funs(mean(., na.rm = TRUE))) 
+        df %>%
+        ggplot() +
+        geom_smooth(aes(x = df %>% pull(paste0("expr_", n)), 
+                        y = df %>% pull(paste0("score_", n))),
+                    formula = y ~ x, method = "lm", size = .1) +
+        geom_point(aes(x = df %>% pull(paste0("expr_", n)),
+                       y = df %>% pull(paste0("score_", n)),
+                       col = celltypes, size = 1)) +
+        #labs(x = "Gata1 gene expression", y = "Gata1 motif accessibility (z-score)") +
+        theme(legend.position = "none") +
+        scale_color_manual(values = col)+
+        labs(title = paste0(n), x = "gene expression", y = "gene activity score")
+
+      })
+    }
+
+  do.call(gridExtra::grid.arrange, c(plots, scatter_plots, ncol = 2, nrow = 2))
+  # 
+
+}
+```
+
+
+
+
+Plot gene expression, gene scores & motif z-scores:
+
+```#{r, fig.width=10, fig.height=10}
+
+for (n in marker_genes) {
+  print(n)
+  # select one row for a particular gene
+  score_n <- gene_scores_mat[rownames(gene_scores_mat) %in% c(n), ]
+  # add score for this gene to metadata
+  metadata[paste0("score_",n)] <- score_n
+  # select gene expression for a particular gene
+  expr_n <- lognorm[rownames(lognorm) %in% c(n), ]
+  metadata[paste0("expr_", n)] <- expr_n
+  
+  
+  seacells_n <- sea_mtx[rownames(sea_mtx) == tfs[grepl(paste0("^", n), tfs)], ]
+  sea_meta[paste0("seacell_", n)] <- seacells_n
 
   # if the marker gene is a TF
   if (length(tfs[grepl(paste0("^", n), tfs)]) > 0) {

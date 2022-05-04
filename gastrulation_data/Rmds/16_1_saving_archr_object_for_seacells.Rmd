@@ -85,5 +85,7 @@ write.csv(expr.mat, paste0(dir_path, 'gene_expr.csv'), quote=FALSE)
 write.csv(as.data.frame(rowData(gene.expr)), paste0(dir_path, "gene_expr_rowData.csv"), quote = FALSE)
 write.csv(colnames(gene.expr), paste0(dir_path, "gene_expr_cells.csv"), quote = FALSE)
 write.csv(as.data.frame(colData(gene.expr)), paste0(dir_path, "gene_expr_colData.csv"), quote = FALSE)
+
+
 ```
 
