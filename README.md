@@ -3,7 +3,8 @@ Save progress of my labrotation
 
 
 
-* `ArchK`
+* `ArchK` contains R scripts with adapted ArchR (https://github.com/GreenleafLab/ArchR) functions. Cloning the ArchR repository (https://github.com/GreenleafLab/ArchR) and adding these R scripts as well as the function names to the name space enables the user to use the new functions.
+* 
 
 
 **Abstract of the project**
