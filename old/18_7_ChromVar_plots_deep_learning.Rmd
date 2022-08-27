@@ -1,0 +1,489 @@
+---
+title: "ChromVar scores deep learning model"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 5
+    code_folding: hide
+    toc_float: true
+    code_download: true
+    theme: cosmo
+    highlight: textmate
+---
+
+<style>
+body {
+text-align: justify}
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(cache = FALSE, autodep = TRUE, 
+                      collapse = TRUE, message = FALSE)
+knitr::opts_knit$set(root.dir = "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data_new/")
+setwd("/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data_new/")
+
+set.seed(1)
+```
+
+  
+```{r}
+## Load libraries
+
+
+suppressPackageStartupMessages({
+library(ArchR)
+library(parallel)
+#library(rhdf5)
+library(tidyverse)
+library(reticulate)
+library(zellkonverter)
+library(Matrix)
+library(dichromat)
+library(Seurat)
+#library(caret)
+h5disableFileLocking()})
+```
+
+```{r}
+proj <- loadArchRProject("/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/15_gene_scores_from_p2g_as_gene_expr_matrix/")
+
+#proj <- loadArchRProject("Kathi/06_deep_chromvar/")
+metadata <- as.data.frame(getCellColData(proj))
+```
+
+
+
+
+Prepare Gene expression matrix:
+
+```#{r}
+# get gene expression matrix
+gene_expr <- getMatrixFromProject(proj, useMatrix = "GeneExpressionMatrix")
+gene_expr_mat <- assays(gene_expr)[[1]]
+rownames(gene_expr_mat) <- rowData(gene_expr)$name
+
+
+# normalize gene expression
+lognorm <- t(t(gene_expr_mat) / colSums(gene_expr_mat))
+lognorm <- log(lognorm * 1e4 + 1)  
+
+
+# get the metadata 
+#metadata <- as.data.frame(colData(gene_expr))
+
+```
+
+Prepare motif deviation z-score matrix from deep learning motif x peak matrix
+
+```{r}
+# get motif matrix
+deep_motifs <- getMatrixFromProject(proj, useMatrix = "DeepLearningMotifs")
+deep_motif_mtx <- assays(deep_motifs)[[2]]
+rownames(deep_motif_mtx) <- tolower(rownames(deep_motif_mtx))
+substr(rownames(deep_motif_mtx), 1, 1) <- toupper(substr(rownames(deep_motif_mtx), 1, 1))
+
+```
+
+Save deep learning motif scores for pseudotime. Since, this only takes as input positive values,
+we will add the most negative and shift everyting to be positive
+
+```{r, eval = FALSE}
+pos <- copy(deep_motif_mtx)
+pos <- pos + abs(min(pos))
+#pos[which(pos < 0)] <- 0
+stopifnot(min(pos) >= 0)
+
+write.csv(as.matrix(pos), "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/UniTVelo/motif_matrix_deep_ChromVar_pos.csv", quote=FALSE, col.names = colnames(pos))
+```
+
+Prepare ArchR motif deviations:
+
+
+```{r}
+# get motif matrix
+motifs <- getMatrixFromProject(proj, useMatrix = "MotifMatrix")
+motif_mtx <- assays(motifs)[[2]]
+# remove index number from TFs
+tfs <- gsub("_.*", "", rownames(motif_mtx))
+#tfs <- str_remove(rownames(motif_mtx), "_([0-9])")
+rownames(motif_mtx) <- tfs
+
+#motif_mtx <- motif_mtx[rownames(motif_mtx) %in% rownames(deep_motif_mtx),]
+
+#deep_motif_mtx[rownames(motif_mtx)]
+
+```
+
+
+Prepare Gene activity scores
+
+
+```{r}
+gene_scores <- getMatrixFromProject(proj, useMatrix = "GeneScoreMatrix")
+gene_scores_mat <- assays(gene_scores)[[1]]
+rownames(gene_scores_mat) <- rowData(gene_scores)$name
+colnames(gene_scores_mat) <- colnames(gene_scores)
+```
+
+
+Color Palette:
+
+```{r}
+colPalette_celltypes = c('#532C8A',
+ '#c19f70',
+ '#f9decf',
+ '#c9a997',
+ '#B51D8D',
+ '#3F84AA',
+ '#9e6762',
+ '#354E23',
+ '#F397C0',
+ '#ff891c',
+ '#635547',
+ '#C72228',
+ '#f79083',
+ '#EF4E22',
+ '#989898',
+ '#7F6874',
+ '#8870ad',
+ '#647a4f',
+ '#EF5A9D',
+ '#FBBE92',
+ '#139992',
+ '#cc7818',
+ '#DFCDE4',
+ '#8EC792',
+ '#C594BF',
+ '#C3C388',
+ '#0F4A9C',
+ '#FACB12',
+ '#8DB5CE',
+ '#1A1A1A',
+ '#C9EBFB',
+ '#DABE99',
+ '#65A83E',
+ '#005579',
+ '#CDE088',
+ '#f7f79e',
+ '#F6BFCB')
+
+celltypes <- (as.data.frame(getCellColData(proj)) %>% group_by(celltypes) %>% 
+ summarise(n = n()))$celltypes
+
+col <- setNames(colPalette_celltypes, celltypes)
+```
+
+
+Select a few marker genes and transcription factors:
+```{r}
+marker_genes <- c("Lamb1",  "Sparc", "Elf5", "Ascl2", "Tfap2c", "Ttr",
+                  "Apoa2", "Apoe", "Cystm1", "Emb", "Spink1",  "Krt19",
+                  "Dkk1", "Grhl3", "Trp63", "Grhl2",  "Pax6", "Pax2",
+                  "En1", "Foxd3", "Tfap2a", "Pax3", "Sox9",
+                  "Six3", "Hesx1", "Irx3", "Hoxb9", "Cdx4",
+                  "Hes3", "Hba-a2", "Hba-a1",  "Hbb-bh1", "Gata1",
+                   "Gata6",
+                  #"Gata6", "Gata5",
+                  "Cited4",
+                   "Cdh5", "Pecam1", "Anxa5", "Etv2", "Igf2",
+                  "Krt8", "Krt18", "Pmp22", "Ahnak", "Bmp4", "Tbx4", "Hoxa11",
+                  "Hoxa10", "Tnnt2", "Myl4",  "Myl7", "Acta2",
+                  "Smarcd3", "Tcf21", "Tbx6", "Dll1", "Aldh1a2", "Tcf15",
+                  "Meox1", "Tbx1", "Gbx2", "Cdx1", "Hoxb1", "Hes7", "Osr1",
+                  "Mesp2", "Lefty2", "Mesp1", "Cer1",  "Chrd", 
+                  "Foxa2", "Pax7", "Fgf8", "Lhx1", "Mixl1", "Otx2", "Hhex",
+                   "Ifitm3", "Nkx1-2", "Eomes", "Nanog", "Utf1",
+                  "Epcam", "Pou5f1" )
+
+# marker_genes <- marker_genes[marker_genes %in% rownames(motif_mtx)]
+# marker_genes <- marker_genes[marker_genes %in% rownames(deep_motif_mtx)]
+```
+
+
+```{r}
+metadata <- as.data.frame(metadata)
+```
+
+
+```{r}
+for (n in c("Gata1", "Gata2", "Gata3", "Gata4", "Gata5", "Gata6")) {
+  # print(n)
+  # # select one row for a particular gene
+  # score_n <- gene_scores_mat[rownames(gene_scores_mat) %in%  n, ]
+  # # add score for this gene to metadata
+  # metadata[paste0("score_",n)] <- score_n
+  # # select gene expression for a particular gene
+  # expr_n <- lognorm[rownames(lognorm) %in% c(n), ]
+  # metadata[paste0("expr_", n)] <- expr_n
+  # 
+  # 
+  # seacells_n <- sea_mtx[rownames(sea_mtx) == tfs[grepl(paste0("^", n), tfs)], ]
+  # sea_meta[paste0("seacell_", n)] <- seacells_n
+
+  # select motif z score
+  motif_n <- motif_mtx[rownames(motif_mtx) ==  n, ]
+  metadata[paste0("motif_", n)] <- motif_n
+  
+  # create barplots for gene scores, gene expression and motif z-score
+  plots <- map(c("motif_"), function(p){
+    df <- metadata %>%
+    group_by(celltypes) %>%
+    summarise_at(vars(paste0(p, n)), funs(mean(., na.rm=TRUE)))
+    df %>% ggplot() +
+    geom_bar(aes(x = celltypes, y = df %>% pull(paste0(p, n)), 
+                 fill = celltypes), stat = "identity") +
+    scale_fill_manual(values = col) +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+          legend.position = "none") +
+    labs(title = paste0(n), x = "celltype", y = paste0(p))
+  })
+
+}
+
+do.call(gridExtra::grid.arrange, c(plots, ncol = 2))
+```
+
+
+```{r}
+
+#motif_mat <- deep_motif_mtx
+for (n in c("Gata1", "Gata2", "Gata3", "Gata4", "Gata6")) {
+  #print(n)
+  motif_n <- motif_mtx[rownames(motif_mtx) == n, ]# tfs[grepl(paste0("^", n), tfs)], ]
+  metadata[paste0("motif_", n)] <- motif_n
+  p = "motif_"
+  df <- metadata %>%
+    as.data.frame() %>% 
+    group_by(celltypes) %>%
+    summarise()
+    summarise_at(vars(paste0(p, n)), funs(mean(., na.rm=TRUE)))
+  print(df %>% ggplot() +
+  geom_bar(aes(x = celltypes, y = df %>% pull(paste0(p, n)), 
+               fill = celltypes), stat = "identity") +
+  scale_fill_manual(values = col) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        legend.position = "none") +
+  labs(title = paste0(n), x = "celltype", y = paste0(p)) )
+  
+}
+  
+```
+
+
+```{r}
+
+#motif_mat <- deep_motif_mtx
+for (n in c("Gata1", "Gata2", "Gata3", "Gata4", "Gata6")) {
+  #print(n)
+  motif_n <- motif_mtx[rownames(motif_mtx) == n, ]# tfs[grepl(paste0("^", n), tfs)], ]
+  metadata[paste0("motif_", n)] <- motif_n
+  p = "motif_"
+  df <- metadata %>%
+    as.data.frame() %>% 
+    group_by(celltypes) %>%
+    summarise_at(vars(paste0(p, n)), funs(mean(., na.rm=TRUE)))
+  print(df %>% ggplot() +
+  geom_bar(aes(x = celltypes, y = df %>% pull(paste0(p, n)), 
+               fill = celltypes), stat = "identity") +
+  scale_fill_manual(values = col) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        legend.position = "none") +
+  labs(title = paste0(n), x = "celltype", y = paste0(p)) )
+  
+}
+  
+```
+
+
+# GATA Factors
+
+```#{r, fig.width=10, fig.height=10}
+for (n in c("Gata1", "Gata2", "Gata3", "Gata4", "Gata5", "Gata6")) {
+  print(n)
+  # select one row for a particular gene
+  score_n <- gene_scores_mat[rownames(gene_scores_mat) %in%  n, ]
+  # add score for this gene to metadata
+  metadata[paste0("score_",n)] <- score_n
+  # select gene expression for a particular gene
+  expr_n <- lognorm[rownames(lognorm) %in% c(n), ]
+  metadata[paste0("expr_", n)] <- expr_n
+  
+  
+  seacells_n <- sea_mtx[rownames(sea_mtx) == tfs[grepl(paste0("^", n), tfs)], ]
+  sea_meta[paste0("seacell_", n)] <- seacells_n
+
+  # select motif z score
+  motif_n <- motif_mtx[rownames(motif_mtx) ==  tfs[grepl(paste0("^", n), tfs)], ]
+  metadata[paste0("motif_", n)] <- motif_n
+  
+  # create barplots for gene scores, gene expression and motif z-score
+  plots <- map(c("score_", "motif_"), function(p){
+    df <- metadata %>%
+    group_by(celltypes) %>%
+    summarise_at(vars(paste0(p, n)), funs(mean(., na.rm=TRUE)))
+    df %>% ggplot() +
+    geom_bar(aes(x = celltypes, y = df %>% pull(paste0(p, n)), 
+                 fill = celltypes), stat = "identity") +
+    scale_fill_manual(values = col) +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+          legend.position = "none") +
+    labs(title = paste0(n), x = "celltype", y = paste0(p))
+  })
+  sea_plot <- map(seq.int(1), function(sea){
+    sea_meta %>% 
+    group_by(celltypes) %>%
+    summarise(mean = mean(!!sym(paste0("seacell_",n)))) %>%
+    ggplot() +
+    geom_bar(aes(x = celltypes, y = mean, fill = celltypes), stat = "identity") +
+    scale_fill_manual(values = col) +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1), legend.position = "None") +#%>% print()
+    labs(title = paste0(n), y = "SEACell deviation score")
+  })
+  # create scatter plots for gene expression and motif z-score
+  scatter_plots <- map(seq.int(1), function(s){
+    df <- metadata %>% group_by(celltypes) %>% 
+    summarise_at(vars(paste0("motif_", n), 
+                      paste0("score_", n)), 
+                 funs(mean(., na.rm = TRUE)))
+    df %>%
+    ggplot() +
+    geom_smooth(aes(x = df %>% pull(paste0("score_", n)), 
+                    y = df %>% pull(paste0("motif_", n))),
+                formula = y ~ x, method = "lm", size = .1) +
+    geom_point(aes(x = df %>% pull(paste0("score_", n)), 
+                   y = df %>% pull(paste0("motif_", n)), 
+                   col = celltypes, size = 1)) +
+    #labs(x = "Gata1 gene expression", y = "Gata1 motif accessibility (z-score)") +
+    theme(legend.position = "none") +
+    scale_color_manual(values = col) +
+    labs(title = paste0(n), x = "gene activity score", y = "TF-motif z-score")
+    })
+  do.call(gridExtra::grid.arrange, c(plots, sea_plot, scatter_plots, ncol = 2))
+
+}
+```
+
+
+```{r}
+metadata %>% tail()
+```
+
+
+
+
+
+
+```{r, fig.width=10, fig.height=10}
+
+for (n in marker_genes) {
+  print(n)
+  # select one row for a particular gene
+  score_n <- gene_scores_mat[rownames(gene_scores_mat) %in% c(n), ]
+  # add score for this gene to metadata
+  metadata[paste0("score_",n)] <- score_n
+  # select gene expression for a particular gene
+  #expr_n <- lognorm[rownames(lognorm) %in% c(n), ]
+  #metadata[paste0("expr_", n)] <- expr_n
+  
+  
+  deep_n <- deep_motif_mtx[rownames(deep_motif_mtx) == n, ]
+  metadata[paste0("deep_", n)] <- deep_n
+  
+  metadata <- as.data.frame(metadata)
+
+  # if the marker gene is a TF
+  if (length(tfs[grepl(paste0("^", n), tfs)]) > 0) {
+    
+      # select motif z score
+      motif_n <- motif_mtx[rownames(motif_mtx) ==  tfs[grepl(paste0("^", n), tfs)], ]
+      metadata[paste0("motif_", n)] <- motif_n
+      
+      # create barplots for gene scores, gene expression and motif z-score
+      plots <- map(c("score_", "motif_", "deep_"), function(p){
+        df <- metadata %>%
+        group_by(celltypes) %>%
+        summarise_at(vars(paste0(p, n)), funs(mean(., na.rm=TRUE)))
+        df %>% ggplot() +
+        geom_bar(aes(x = celltypes, y = df %>% pull(paste0(p, n)), 
+                     fill = celltypes), stat = "identity") +
+        scale_fill_manual(values = col) +
+        theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+              legend.position = "none") +
+        labs(title = paste0(n), x = "celltype", y = paste0(p))
+      })
+      
+      # # create scatter plots for gene expression and motif z-score
+      # scatter_plots <- map(seq.int(1), function(s){
+      #   df <- metadata %>% group_by(celltypes) %>% 
+      #   summarise_at(vars(paste0("motif_", n), 
+      #                     paste0("score_", n)), 
+      #                funs(mean(., na.rm = TRUE)))
+      #   df %>%
+      #   ggplot() +
+      #   geom_smooth(aes(x = df %>% pull(paste0("score_", n)), 
+      #                   y = df %>% pull(paste0("motif_", n))),
+      #               formula = y ~ x, method = "lm", size = .1) +
+      #   geom_point(aes(x = df %>% pull(paste0("score_", n)), 
+      #                  y = df %>% pull(paste0("motif_", n)), 
+      #                  col = celltypes, size = 1)) +
+      #   #labs(x = "Gata1 gene expression", y = "Gata1 motif accessibility (z-score)") +
+      #   theme(legend.position = "none") +
+      #   scale_color_manual(values = col) +
+      #   labs(title = paste0(n), x = "gene activity score", y = "TF-motif z-score")
+      #   })
+      #   sea_plot <- map(seq.int(1), function(sea){
+      # sea_meta %>% 
+      # group_by(celltypes) %>%
+      # summarise(mean = mean(!!sym(paste0("seacell_",n)))) %>%
+      # ggplot() +
+      # geom_bar(aes(x = celltypes, y = mean, fill = celltypes), stat = "identity") +
+      # scale_fill_manual(values = col) +
+      # theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1), legend.position = "None") +#%>% print()
+      # labs(title = paste0(n), y = "SEACell deviation score")
+    #})
+      
+    # if the marker gene is no TF
+    } else {
+      
+      # create barplots for gene scores, gene expression and motif z-score
+      plots <- map(c("score_"), function(p){
+        df <- metadata %>%
+        group_by(celltypes) %>%
+        summarise_at(vars(paste0(p, n)), funs(mean(., na.rm=TRUE)))
+        df %>% ggplot() +
+        geom_bar(aes(x = celltypes, y = df %>% pull(paste0(p, n)), 
+                     fill = celltypes), stat = "identity") +
+        scale_fill_manual(values = col) +
+        theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+              legend.position = "none") +
+        labs(title = paste0(n), x = "celltype", y = paste0(p))
+
+      })
+      
+      # create scatter plots for gene expression and gene_score
+      # scatter_plots <- map(seq.int(1), function(s){
+      #   df <- metadata %>% group_by(celltypes) %>%
+      #   summarise_at(vars(paste0("score_", n),
+      #                     paste0("expr_", n)),
+      #                funs(mean(., na.rm = TRUE))) 
+      #   df %>%
+      #   ggplot() +
+      #   geom_smooth(aes(x = df %>% pull(paste0("expr_", n)), 
+      #                   y = df %>% pull(paste0("score_", n))),
+      #               formula = y ~ x, method = "lm", size = .1) +
+      #   geom_point(aes(x = df %>% pull(paste0("expr_", n)),
+      #                  y = df %>% pull(paste0("score_", n)),
+      #                  col = celltypes, size = 1)) +
+      #   #labs(x = "Gata1 gene expression", y = "Gata1 motif accessibility (z-score)") +
+      #   theme(legend.position = "none") +
+      #   scale_color_manual(values = col)+
+      #   labs(title = paste0(n), x = "gene expression", y = "gene activity score")
+      # 
+      # })
+    }
+
+  do.call(gridExtra::grid.arrange, c(plots, ncol = 2, nrow = 2))
+  # 
+
+}
+```

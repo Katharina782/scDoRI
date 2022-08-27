@@ -1,0 +1,368 @@
+---
+title: "Peak calling on separate time points"
+---
+title: "Peak Calling & Peak2Gene Linkage"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 5
+    code_folding: hide
+    toc_float: true
+    code_download: true
+    theme: cosmo
+    highlight: textmate
+---
+
+<style>
+body {
+text-align: justify}
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(cache = FALSE, autodep = TRUE, 
+                      collapse = TRUE, message = FALSE)
+knitr::opts_knit$set(root.dir = "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/")
+setwd("/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/")
+
+set.seed(1)
+```
+
+  
+```{r}
+## Load libraries
+
+
+library(ArchR)
+library(knitr)
+library(rhdf5)
+library(uwot)
+library(tidyverse)
+library(scater)
+library(reticulate)
+library(zellkonverter)
+#library(caret)
+h5disableFileLocking()
+```
+
+
+```{r}
+# load ArchR project
+proj <- loadArchRProject(path = "04_peak_calling_ArchRobject/")
+
+# for R to find macs2 we will use a conda environment where the latest version 
+# of macs2 is installed
+#conda_list()[[1]][1] %>% use_condaenv(required = TRUE)
+```
+
+
+
+# Pseudo-bulk replicates on different time points
+
+For statistical significance we need replicates, which is not given 
+in the binary single cell data obtained from scATAC-seq. Therefore,
+we create pseudo-bulk replicates. We group single cells and the data 
+of all the cells in the group are combined into a pseudo-sample that 
+resembles a bulk-ATAC-seq experiment. For each cell grouping several 
+pseudo-bulks are created, resulting in pseudo-bulk replicates. The main
+assumption here is that the cells we group together are so similar that
+we are not interested in the differences between them. We group cells
+together based on clusters and known cell identities. 
+
+In the case of the gastrulation dataset we have three distinct time points, namely
+E7.5, E8.0 and E8.5. For this reason, we might loose information if we call peaks 
+on 
+
+Parameters:
+
+* minReps, maxReps: min. and max. number of replicates
+* minCells, maxCells: min. and max. number of cells per replicate
+* SamplingRatio: sampling ratio to use if a particular group of cells
+does not have required number
+e.g. 0.8 means that 80% of cells can be sampled without replacement for a particular replicate
+
+Using the generated pseudo-bulk replicates, peak calling can be done. 
+
+The `groupBy` parameter specifies for which groups pseudo-bulk replicates should be made. With pseudo-bulks you can call peaks next, 
+because we do not want to call peaks on all single cells together. 
+
+How many cells do we have for each celltype?
+
+```{r, results = "asis"}
+getCellColData(proj) %>% as.data.frame() %>% 
+  mutate(timepoint = str_remove(Sample, "_rep[1-2]")) %>% 
+  group_by(celltypes, timepoint) %>% summarize(n = n()) %>% knitr::kable()
+```
+```{r, results = "asis"}
+getCellColData(proj) %>% as.data.frame() %>% 
+  mutate(timepoint = str_remove(Sample, "_rep[1-2]")) %>% 
+  group_by(celltypes) %>% summarize(n = n()) %>% knitr::kable()
+```
+
+
+```#{r}
+proj <- addGroupCoverages(ArchRProj = proj, groupBy = "celltypes",
+                          force = FALSE)
+```
+
+
+
+# Peak calling
+https://hbctraining.github.io/Intro-to-ChIPseq/lessons/05_peak_calling_macs.html
+
+Because the scATAC-seq data is binary, peaks cannot be called on single 
+cells. Using pseuodo-bulk replicates we can assess the reproducibility 
+of our peak calls. 
+
+ArchR uses a fixed peak width as opposed to a variable peak width, 
+because then peak length does not need to be normalized and it is
+easier to merge peaks from different saples. The peak length used is 
+501bp, since most peaks are smaller than 501 bp. 
+
+
+## Iterative Overlap
+
+1. rank peaks by their signficance
+2. the most significant peak is retained
+3. any peak overlapping with the most significant peak is removed
+4. the process is repeated for the remaining peaks
+
+
+For example, if we hae 3 ell types A, B, C and 3 pseudo-bulk replicates for each:
+
+1. Call peaks for each pseudo-bulk replicate individually
+2. The first iteration of iterative overlap would then be performed on all pseuo-
+bulk replicates from a single cell type. (It is important to normalize peak 
+significance across different samples beforehand)
+3. Check the reproducibility of each peak across pseud9-bulk replicates and only
+keep the peaks that pass a threshold
+4. You now have a single merged peak set for each of the 3 cell types
+5. proceed with iterative overlap remove to merge A, B, C peak sets (It is 
+important to re-normalize the peak significance across different cell types at 
+this step)
+
+**At the end you are left with a single merged peak set of fixed-width peaks.**
+
+Cell are then defined as accessible at a particular peak if a read from that 
+cell overlapped the peak. 
+
+We set the minimum number of cells used to call a peak to 25, this way
+we will exclude pseudo-bulk replicates with very low cell number. 
+
+```{r}
+addArchRThreads(1)
+#pathToMacs2 <- findMacs2()
+```
+
+
+```#{r}
+proj <- addReproduciblePeakSet(
+    ArchRProj = proj, 
+    groupBy = "celltypes",
+    pathToMacs2 = "/omics/groups/OE0533/internal/katharina/R_env/bin/macs2",
+    minCells = 25, # minimum allowable number of unique cells that was used to 
+    #create the coverage files on which peaks are called. Pseudo-bulk replicates 
+    #derived from very low cell numbers are excluded.
+    force = FALSE
+)
+```
+
+
+
+```{r}
+peakset <- ArchR::getPeakSet(proj) %>%
+  tibble::as_tibble()
+print(paste0("Dimensions of the peak set are: ", paste(dim(peakset), collapse=", ")))
+```
+
+
+
+```{r}
+peakset %>%
+  glimpse()
+```
+
+
+```{r}
+peakset %>%
+  dplyr::count(peakType)
+```
+
+```{r}
+peakset %>%
+  ggplot() +
+  geom_histogram(aes(x=groupScoreQuantile), bins=100, fill = "blue", 
+                 color = "black", alpha = 0.6)
+```
+
+```{r}
+peakset %>%
+  ggplot() +
+  geom_histogram(aes(x=score), bins=100, fill = "blue", 
+                 color = "black", alpha = 0.6)
+```
+
+```{r}
+peakset %>%
+  ggplot() +
+  geom_histogram(aes(x=Reproducibility), bins=3, fill = "blue", 
+                 color = "black", alpha = 0.6)
+```
+
+
+
+Lets have a look for which time stages there where enough cells to call peaks and 
+how many peaks were called in each case. 
+
+```{r}
+peakset %>% group_by(GroupReplicate) %>% summarise(n = n())
+```
+
+
+
+
+```{r, fig.width=15}
+peakset <- as_data_frame(peakset)
+
+p1 <- peakset %>% 
+  mutate(Group = str_extract(peakset[["GroupReplicate"]], "(?<!.)[^.]+")) %>% 
+  ggplot() +
+  geom_bar(aes(x = Group, fill = peakType), position = "dodge") +
+  labs(title = "type of peak") +
+  theme(axis.text.x = element_text(angle = 45, vjust = 0.8, hjust=1)) 
+p1
+```
+
+
+```{r, fig.height=8, fig.width=8}
+p2 <- peakset %>% 
+  ggplot() +
+  geom_violin(aes(x = peakType, y = distToGeneStart, fill = peakType),
+              alpha = .5) +
+  geom_boxplot(aes(x = peakType, y = distToGeneStart, fill = peakType),
+               alpha = .1) +
+  labs(title = "distance to gene start")
+
+p3 <- peakset %>% 
+  ggplot() +
+  geom_violin(aes(x = peakType, y = distToGeneStart, fill = peakType), outlier.shape = NA,
+              alpha = .5) +
+  geom_boxplot(aes(x = peakType, y = distToGeneStart, fill = peakType), outlier.shape = NA,
+               alpha = .1) +
+  ylim(0, 500) +
+  labs(title = "distance to gene start (outliers removed)")
+
+p4 <- peakset %>% 
+  ggplot() +
+  geom_violin(aes(x = peakType, y = distToTSS, fill = peakType),
+                  alpha = .5) + 
+  geom_boxplot(aes(x = peakType, y = distToTSS, fill = peakType), alpha = .1) + 
+  labs(title = "distance to TSS")
+
+p5 <- peakset %>% 
+  ggplot() +
+  geom_violin(aes(x = peakType, y = distToTSS, fill = peakType),
+                  alpha = .5, outlier.shape = NA ) +
+  geom_boxplot(aes(x = peakType, y = distToTSS, fill = peakType), 
+               alpha = .1, outlier.shape = NA) +
+  ylim(0, 1500) +
+  labs(title = "distance to TSS (outliers removed")
+
+p6 <- peakset %>% 
+  mutate(Group = str_extract(peakset[["GroupReplicate"]], "(?<!.)[^.]+")) %>% 
+  ggplot() +
+  geom_histogram(aes(x = GC), bins = 100) +
+  labs(title = "GC content")
+
+p7 <- peakset %>% 
+  mutate(Group = str_extract(peakset[["GroupReplicate"]], "(?<!.)[^.]+")) %>% 
+  ggplot() +
+  geom_violin(aes(x = Group, y = GC, fill = Group), alpha = .5) +
+  geom_boxplot(aes(x = Group, y = GC, fill = Group), alpha = .1) +
+  labs(title = "GC content")
+
+
+gridExtra::grid.arrange(p2, p3, p4, p5, p6, ncol = 2)
+p7
+```
+
+ We will add the peak matrix to the ArchR object.
+ 
+```[r]
+`proj <- addPeakMatrix(ArchRProj = proj, 
+                      verbose = FALSE, 
+                      force = FALSE)
+```
+ 
+```{r}
+#saveArchRProject(proj, outputDirectory = "04_peak_calling_ArchRobject", load = FALSE)
+```
+
+What are our available matrices after this step?
+
+```{r}
+getAvailableMatrices(proj)
+```
+```{r}
+peakMatrix <- getMatrixFromProject(ArchRProj = proj,
+                                   useMatrix = "PeakMatrix",
+                                   verbose = FALSE)
+
+
+print(paste0("Dimensions of the peak matrix are:", paste(dim(peakMatrix), collapse = ", ")))
+```
+
+
+
+# Peak to Gene Linkage
+
+# Getting peaks2gene links took less than 5 minutes.
+
+```#{r}
+proj <- addPeak2GeneLinks(  ArchRProj = proj,
+  reducedDims  = "atac_LSI_100000",
+  useMatrix = "GeneExpressionMatrix",
+  maxDist = 250000,
+  verbose = FALSE, 
+  )
+```
+
+
+Lets have a look at the peak2gene links:
+
+```{r}
+p2g <- getPeak2GeneLinks(
+  ArchRProj = proj,
+  corCutOff = -1,
+  resolution = 1,
+  FDRCutOff = 1e-04,
+  varCutOffATAC = .25,
+  varCutOffRNA = .25, 
+  returnLoops = FALSE
+)
+```
+
+
+```{r, results = "asis"}
+# convert the output to a tibble
+p2g %>% as_tibble() %>% head() %>% knitr::kable()
+```
+
+```{r, fig.width=10}
+p1 <- p2g %>% as_tibble() %>% ggplot() +
+  geom_histogram(aes(x = Correlation), bins = 100, fill = "blue",
+                 color = "black", alpha = .6) 
+
+p2 <- p2g %>% as_tibble() %>% ggplot() +
+  geom_histogram(aes(x = Correlation), bins = 100, fill = "blue",
+                 color = "black", alpha = .6) +
+  scale_y_log10() +
+  labs(y = "log10(counts)")
+
+gridExtra::grid.arrange(p1, p2, ncol = 2)
+```
+
+
+
+
+
+

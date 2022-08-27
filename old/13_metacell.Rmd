@@ -1,0 +1,171 @@
+---
+title: "Metacell"
+output: html_document
+  html_document:
+    toc: true
+    toc_depth: 5
+    code_folding: hide
+    toc_float: true
+    code_download: true
+    theme: cosmo
+    highlight: textmate
+---
+
+<style>
+body {
+text-align: justify}
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(cache = FALSE, autodep = TRUE, 
+                      collapse = TRUE, message = FALSE)
+knitr::opts_knit$set(root.dir = "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/")
+setwd("/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/")
+
+set.seed(1)
+```
+
+
+```{r}
+suppressPackageStartupMessages({
+library(tidyverse)
+library(metacell)
+library(zellkonverter)
+library(SummarizedExperiment)
+})
+```
+
+
+Initialize a directory to store all outputs. 
+
+```{r}
+scdb_init("metacell/", force_reinit =T )
+```
+
+Lets add the gene expression matrix. 
+
+
+```{r}
+test <- mcell_import_scmat_tsv(
+  "gastr",
+  "jupyter_notebooks/counts_matrix.tsv",
+  force = FALSE, 
+  dset_nm = "meta",
+)
+
+mat = scdb_mat("gastr")
+
+```
+
+
+
+
+```{r}
+# link package to figure directory
+if(!dir.exists("metacell_figs")) dir.create("metacell_figs/")
+scfigs_init("metacell_figs/")
+```
+
+
+```{r}
+mcell_plot_umis_per_cell("gastr")
+
+```
+# remove certain genes 
+
+```{r}
+nms = c(rownames(mat@mat), rownames(mat@ignore_gmat))
+bad_genes = unique(c(grep("^MT-", nms, v=T), grep("^MTMR", nms, v=T), grep("^MTND", nms, v=T),"NEAT1","TMSB4X", "TMSB10"))
+
+bad_genes
+```
+
+```{r}
+mcell_mat_ignore_genes(new_mat_id="gastr", mat_id="gastr", bad_genes, reverse=F)
+```
+
+# Select feature genes
+
+```{r}
+mcell_add_gene_stat(gstat_id="gastr", mat_id="gastr", force=T)
+
+```
+
+
+Use all genes whose scaled variance exceeds a certain threshold:
+
+```{r}
+mcell_gset_filter_varmean(gset_id="test_feats", gstat_id="gastr", T_vm=0.08, force_new=T)
+mcell_gset_filter_cov(gset_id = "test_feats", gstat_id="gastr", T_tot=100, T_top3=2)
+```
+
+
+
+```{r}
+mcell_plot_gstats(gstat_id="gastr", gset_id="test_feats")
+
+```
+
+
+```{r}
+mcell_add_cgraph_from_mat_bknn(mat_id="gastr", 
+                gset_id = "test_feats", 
+                graph_id="test_graph",
+                K=100,
+                dsamp=T)
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+```{r}
+rna <- readH5AD("Ricards_objects_four_timepoints/anndata_rna.h5ad")
+rna_mat <- assays(rna)[[1]]
+
+save <- as.matrix(rna_mat)
+write.table(save, file = "metacell/rna_expr_mat", row.names=TRUE, col.names=TRUE)
+
+
+# get metadata
+metadata <- as.data.frame(colData(rna))
+metadata <- metadata %>% rownames_to_column("cell") 
+metadata %>% rename(c("Cell.ID" = cell, "Batch.Set.ID" = sample)
+write.talbe(metadata, file = "metacell/metadata", rown)
+```
+
+
+
+
+```{r}
+mat <- scdb_mat(rna_mat)
+
+mcell_import_scmat_10x(
+  mat_nm = "gastr",
+  matrix_fn = rna_mat,
+  genes_fn = rownames(rna_mat),
+  cells_fn = colnames(rna_mat)
+)
+
+```
+
+```{r}
+mcell_import_scmat_tsv("gastr",
+fn="metacell/rna_expr_mat",
+)
+```
+
+```{r}
+mat <- scdb_add_mat("gastr")
+
+```
+

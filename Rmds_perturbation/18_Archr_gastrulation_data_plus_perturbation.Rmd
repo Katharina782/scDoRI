@@ -1,0 +1,1021 @@
+---
+title: "ArchR pre-processing - gastrulation dataset (+ perturbations)"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 5
+    code_folding: hide
+    toc_float: true
+    code_download: true
+    theme: cosmo
+    highlight: textmate
+---
+
+<style>
+body {
+text-align: justify}
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(cache = FALSE, autodep = TRUE, 
+                      collapse = TRUE, message = FALSE)
+knitr::opts_knit$set(root.dir = "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data_new/")
+setwd("/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data_new/")
+
+set.seed(1)
+```
+
+  
+```{r}
+## Load libraries
+
+
+suppressPackageStartupMessages(library(ArchR))
+library(knitr)
+library(rhdf5)
+library(uwot)
+library(tidyverse)
+library(scater)
+library(zellkonverter)
+library(corrplot)
+#library(caret)
+h5disableFileLocking()
+```
+  
+  
+In this script I re-analyzed the gastrulation dataset including new timepoints 
+(E7.75) and perturbation data ("E8.5_CRISPR_T_KO", "E8.5_CRISPR_T_WT"). The 
+original processed ArchR project includes more cells than the RNA count matrix. Since
+this is multiome data, the reason why there is more cells in the peak matrix is
+probably, that more cells passed scATAC-QC than scRNA-QC. Since we are later on 
+also interested the scRNA-seq data and not only in the scATAC-seq data, I will subset 
+the ArchR object and continue only with overlapping cells. 
+
+Cells of his dataset have already been annotated, QC has been performed and 
+peaks called. I will proceed using these processed results. 
+
+```#{r}
+proj <- loadArchRProject("/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data_new/processed/atac/archR/")
+```
+
+```{r}
+
+# subset the ArchR project to contain the same cells as the scRNA-seq data.
+
+rna_seurat <- readRDS("/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data_new/Kathi/rna_seurat")
+
+```
+
+```{r, eval = FALSE}
+
+# filter the ArchR object to contain only cells which also overlap with the 
+# cells that pass RNA QC as present in the Seurat object
+
+print(paste0("Out of ", length(rownames(proj)), " cells in the PeakMatrix and ", 
+             length(colnames(rna_seurat)), " there are ", length(intersect(rownames(proj),
+                                                                    colnames(rna_seurat))),
+             " which overlap, meaning all RNA cells also pass ATAC-QC"))
+
+
+keep <- intersect(rownames(proj), colnames(rna_seurat))
+
+subset <- proj[keep, ]
+
+saveArchRProject(subset, "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data_new/Kathi/01_original_subset")
+
+```
+
+
+Save the peak matrix as an anndata object for training PeakVI/MultiVI model 
+and other analysis in Python.
+
+
+```{r, eval = FALSE}
+
+proj <- loadArchRProject( "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data_new/Kathi/01_original_subset")
+
+peaks <- getMatrixFromProject(proj, useMatrix = "PeakMatrix")
+mat <- assays(peaks)[[1]]
+
+peakset <- getPeakSet(proj)
+names(peakset) <- seq.int(length(peakset))
+peakset <- peakset %>% as.data.frame() %>% unite(peak, seqnames, start, sep = ":", remove = FALSE) %>%
+  unite(peak, peak, end, sep = "-", remove = FALSE)
+rownames(mat) <- peakset$peak
+colData(peaks) 
+
+
+#saving the peak matrix as anndata object for training PeakVI models
+
+sce <- SingleCellExperiment(list(peaks=mat), 
+                            rowData = peakset,
+                            colData = as.data.frame(colData(peaks)))
+
+writeH5AD(sce, "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data_new/Kathi/peak_anndata_from_archr", X_name = "peaks")
+
+```
+
+
+
+
+```{r}
+addArchRGenome("mm10")
+```
+
+
+
+
+
+# Dimensionality reduction 
+
+
+
+```{r, eval = FALSE}
+
+
+proj <- addIterativeLSI(
+    ArchRProj = proj, 
+    useMatrix = "PeakMatrix", 
+    iterations = 5,
+    clusterParams = list(
+      resolution = c(0.1, 0.2, 0.4, 0.8), 
+      sampleCells = 10000,
+      n.start = 10
+    ),
+    saveIterations = FALSE,
+    depthCol = "nFrags",
+    varFeatures = 100000,
+    firstSelection = "top", 
+    binarize = TRUE,
+    name = "LSI_ATAC",
+    corCutOff = 0.75,
+    seed = 1
+)
+#proj <- addIterativeLSI(ArchRProj = proj, useMatrix = "PeakMatrix", name = "atac_LSI" )
+
+
+#saveArchRProject(proj, "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data_new/Kathi/02_added_LSI/", load = FALSE)
+
+
+# saving dimensionality reduction
+redDim <- getReducedDims(
+  ArchRProj = proj,
+  reducedDims = "LSI_ATAC",
+  returnMatrix = TRUE,
+  dimsToUse = NULL,
+  scaleDims = NULL,
+  corCutOff = 0.75
+)
+write.csv(redDim, "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data_new/Kathi/lsi_embedding.csv", quote = FALSE)
+
+
+```
+
+
+```{r}
+proj <- loadArchRProject("/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data_new/Kathi/02_added_LSI/")
+```
+
+
+# Visualization
+
+
+
+```{r}
+
+proj <- addUMAP(ArchRProj = proj, reducedDims = "LSI_ATAC", 
+                     force = TRUE, verbose = FALSE)
+
+
+p1 <- plotEmbedding(ArchRProj = proj, colorBy = "cellColData", name = "sample", embedding = "UMAP")
+
+p2 <-  plotEmbedding(ArchRProj = proj, colorBy = "cellColData", name = "celltype.mapped", embedding = "UMAP")
+
+
+p1 
+```
+
+
+
+
+
+
+```{r}
+# add custom colors
+
+
+colPalette_celltypes = c('#532C8A',
+ '#c19f70',
+ '#f9decf',
+ '#c9a997',
+ '#B51D8D',
+ '#3F84AA',
+ '#9e6762',
+ '#354E23',
+ '#F397C0',
+ '#ff891c',
+ '#635547',
+ '#C72228',
+ '#f79083',
+ '#EF4E22',
+ '#989898',
+ '#7F6874',
+ '#8870ad',
+ '#647a4f',
+ '#EF5A9D',
+ '#FBBE92',
+ '#139992',
+ '#cc7818',
+ '#DFCDE4',
+ '#8EC792',
+ '#C594BF',
+ '#C3C388',
+ '#0F4A9C',
+ '#FACB12',
+ '#8DB5CE',
+ '#1A1A1A',
+ '#C9EBFB',
+ '#DABE99',
+ '#65A83E',
+ '#005579',
+ '#CDE088',
+ '#f7f79e',
+ '#F6BFCB')
+
+celltypes <- (as.data.frame(getCellColData(proj)) %>% group_by(celltype.mapped) %>% 
+ summarise(n = n()))$celltype.mapped
+
+col <- setNames(colPalette_celltypes, celltypes)
+
+
+col <- setNames(colPalette_celltypes, celltypes)
+col["PGC"] <- "#FACB12"
+col["Paraxial_mesoderm"] <- "#8DB5CE"
+col["Parietal_endoderm"] <- "#1A1A1A" 
+col["Neural_crest"] <- "#C3C388"
+col["NMP"] <- "#8EC792"
+col["Nascent_mesoderm"] <- "#C594BF"
+
+```
+
+
+```{r, fig.width=10}
+
+emb <- getEmbedding(proj) %>% as.data.frame()
+colnames(emb) <- c("umap1", "umap2")
+
+df <- as_data_frame(cbind(getCellColData(proj), emb) ) 
+
+variables <- c("celltype.mapped", "sample", "nFrags", "doublet_score", "TSSEnrichment")
+
+
+plot1 <- map(c("celltype.mapped"), function(n){
+  ggplot() +
+  geom_point(aes(x = df %>% pull("umap1"), y = df %>% pull("umap2"), 
+                 col = df %>% pull(n)),  size = .8) +
+    guides(col=guide_legend(title=paste0(n))) +
+    scale_color_manual(values = col)+
+    xlab("umap1") +
+    ylab("umpa2") +
+    labs(title = paste0(n)) #+ theme(legend.position = "None")
+})
+
+plots2 <- map(c("nFrags", "doublet_score"), function(n){
+  ggplot() +
+  geom_point(aes(x = df %>% pull("umap1"), y = df %>% pull("umap2"), 
+                 col = df %>% pull(n)), size = .8) +
+    scale_color_viridis_c() +
+    guides(fill=guide_legend(title=paste0(n))) +
+    xlab("umap1") +
+    ylab("umpa2") +
+    labs(title = paste0(n)) +
+    guides(col=guide_legend(paste0(n)))
+})
+
+plot3 <- map(c("sample"), function(n){
+  ggplot() +
+  geom_point(aes(x = df %>% pull("umap1"), y = df %>% pull("umap2"), 
+                 col = df %>% pull(n)),  size = .8) +
+    guides(col=guide_legend(title=paste0(n))) +
+    xlab("umap1") +
+    ylab("umpa2") +
+    labs(title = paste0(n)) 
+})
+
+
+p1
+```
+
+
+```{r, fig.width=15, fig.height=8}
+do.call(gridExtra::grid.arrange, c(plot3, plots2, ncol=3))#, nrow = 2))
+
+```
+
+<details> 
+<summary>Plots for report</summary>
+
+```{r, fig.width=10, fig.height=6}
+df %>% 
+ggplot() +
+geom_point(aes(x = umap1, y = umap2, 
+               col = celltype.mapped),  size = .6) +
+  guides(col=guide_legend(title="Celltype", override.aes = list(size = 5))) +
+  scale_color_manual(values = col)+
+  xlab("UMAP1") +
+  ylab("UMAP2") +
+  theme(axis.title.x = element_text(size = 15), # change size of axis title
+        axis.title.y = element_text(size = 15), # change size of axis title
+        legend.title = element_text(size=15), # change siez of legend title
+        legend.text = element_text(size=12), # change size of legend text
+        panel.background = element_rect(fill = "white", colour = "black"), # make background white
+        legend.key = element_rect(fill = NA), # remove background fill in legend
+        aspect.ratio = 1) # make plot quadratic
+
+
+ggsave("Kathi/plots/celltypes_lsi.pdf")
+```
+
+```{r,fig.width=10, fig.height=6}
+df %>% 
+ggplot() +
+geom_point(aes(x = umap1, y = umap2, 
+               col = sample),  size = .4) +
+  guides(col=guide_legend(title="Sample", override.aes = list(size = 5))) +
+  #scale_color_brewer(palette="Set3") +
+  xlab("UMAP1") +
+  ylab("UMAP2") +
+  theme(axis.title.x = element_text(size = 15),
+        axis.title.y = element_text(size = 15),
+        legend.title = element_text(size=15),
+        panel.background = element_rect(fill = "white", colour = "black"),
+        legend.text = element_text(size=12),
+        legend.key = element_rect(fill = NA),
+        aspect.ratio = 1)
+
+ggsave("Kathi/plots/sample_lsi.pdf")
+
+```
+
+
+```{r, fig.height=6, fig.width=10}
+df %>% 
+ggplot() +
+geom_point(aes(x = umap1, y = umap2, 
+               col = nFrags),  size = .4) +
+  scale_color_viridis_c() +
+  guides(col=guide_legend(title="#Fragments", override.aes = list(size = 5))) +
+  #scale_color_brewer(palette="Set3") +
+  xlab("UMAP1") +
+  ylab("UMAP2") +
+  theme(axis.title.x = element_text(size = 15),
+        axis.title.y = element_text(size = 15),
+        legend.title = element_text(size=15),
+        panel.background = element_rect(fill = "white", colour = "black"),
+        legend.text = element_text(size=12),
+        legend.key = element_rect(fill = NA),
+        aspect.ratio = 1)
+
+ggsave("Kathi/plots/fragements_lsi.pdf")
+
+```
+
+
+```{r, fig.height=6, fig.width=10}
+df %>% 
+ggplot() +
+geom_point(aes(x = umap1, y = umap2, 
+               col = doublet_score),  size = .4) +
+  scale_color_viridis_c() +
+  guides(col=guide_legend(title="Doublet Score", override.aes = list(size = 5))) +
+  #scale_color_brewer(palette="Set3") +
+  xlab("UMAP1") +
+  ylab("UMAP2") +
+  theme(axis.title.x = element_text(size = 15),
+        axis.title.y = element_text(size = 15),
+        legend.title = element_text(size=15),
+        panel.background = element_rect(fill = "white", colour = "black"),
+        legend.text = element_text(size=12),
+        legend.key = element_rect(fill = NA),
+        aspect.ratio = 1)
+
+ggsave("Kathi/plots/doublet_score_lsi.pdf")
+
+```
+
+```{r, fig.height=6, fig.width=10}
+df %>% 
+ggplot() +
+geom_point(aes(x = umap1, y = umap2, 
+               col = TSSEnrichment),  size = .4) +
+  scale_color_viridis_c() +
+  guides(col=guide_legend(title="TSS Enrichment Score", override.aes = list(size = 5))) +
+  #scale_color_brewer(palette="Set3") +
+  xlab("UMAP1") +
+  ylab("UMAP2") +
+  theme(axis.title.x = element_text(size = 15),
+        axis.title.y = element_text(size = 15),
+        legend.title = element_text(size=15),
+        panel.background = element_rect(fill = "white", colour = "black"),
+        legend.text = element_text(size=12),
+        legend.key = element_rect(fill = NA),
+        aspect.ratio = 1)
+
+
+ggsave("Kathi/plots/tss_enrichment_lsi.pdf")
+
+```
+
+</details>
+
+
+
+
+
+# Gene activity scores
+
+I added gene activity scores computed using the gene body +/- 100bp. Later I 
+also investigate different versions of this gene activity score function.
+
+### Gene body
+
+```{r, eval = FALSE}
+proj <- addGeneScoreMatrix(
+  input = proj,
+  genes = getGenes(proj),
+  geneModel = "exp(-abs(x)/5000) + exp(-1)",
+  matrixName = "GeneScoreMatrix_geneBody",
+  extendUpstream = c(1000, 1e+05),
+  extendDownstream = c(1000, 1e+05),
+  geneUpstream = 5000,
+  geneDownstream = 0,
+  useGeneBoundaries = TRUE,
+  useTSS = FALSE,
+  extendTSS = FALSE,
+  tileSize = 500,
+  ceiling = 4,
+  geneScaleFactor = 5,
+  scaleTo = 10000,
+  excludeChr = c("chrY", "chrM"),
+  blacklist = getBlacklist(proj),
+  threads = getArchRThreads(),
+  parallelParam = NULL,
+  subThreading = TRUE,
+  force = TRUE,
+  logFile = createLogFile("addGeneScoreMatrix")
+)
+```
+
+
+
+
+
+# Gene expression
+
+Since the dataset is multiome we can simply add our gene expression matrix and do
+not need to do integration. Using the gene annotation from the gene score matrix, 
+we create a SingleCellExperiment object of the gene expression matrix (raw counts)
+from the Seurat object. I only kept the genes for which ArchR computes a gene 
+activity score and removed all other genes.
+
+```{r, eval = FALSE}
+scores <- getMatrixFromProject(proj, useMatrix = "GeneScoreMatrix_geneBody")
+
+gene_anno <- rowData(scores) %>% as.data.frame() %>%
+  mutate(strand = ifelse(strand == 1, "+", "-")) %>% 
+  mutate(start_new = ifelse(strand == "+", start, end)) %>% 
+  mutate(end_new = ifelse(strand == "+", end, start)) %>%
+  mutate(start = start_new, end = end_new) %>% 
+  GRanges()
+```
+
+
+
+```{r, eval = FALSE}
+
+# We now want to remove any genes from the gene expression matrix for which we do 
+#not have a gene activity scores.
+expr <- rna_seurat@assays$RNA@counts
+
+print(paste0("There are ", nrow(scores), " genes in the gene activity score matrix and  ",  nrow(expr), " genes in the gene expression matrix."))
+
+
+# remove any genes which are not found in the gene score matrix
+expr <- expr[rownames(expr) %in% rowData(scores)$name, ]
+
+stopifnot(all(rownames(expr) %in% rowData(scores)$name))
+
+gene_anno <- gene_anno %>% as.data.frame() %>% 
+  dplyr::filter(name %in% rownames(expr)) %>%
+  GRanges()
+
+# order gene expression matrix as gene_anno
+expr <- expr[gene_anno$name,]
+
+stopifnot(all(gene_anno$name == rownames(expr)))
+```
+
+
+```{r, eval = FALSE}
+print(paste0("There are ", nrow(expr), " overlapping genes."))
+```
+
+
+```{r, eval = FALSE}
+# create a Summarized Experiment
+seRNA <- SummarizedExperiment(assays = list(counts=expr),
+                          colData = rna_seurat@meta.data,
+                          rowRanges = gene_anno)
+
+proj <- addGeneExpressionMatrix(input = proj, seRNA = seRNA, force = TRUE)
+
+```
+
+```{r, eval = FALSE}
+
+# add gene expression matrix to ArchR object.
+test <- getMatrixFromProject(proj, useMatrix = "GeneExpressionMatrix")
+```
+
+
+
+
+
+
+```{r}
+marker_genes <- c("Lamb1", "Plat", "Sparc", "Elf5", "Ascl2", "Tfap2c", "Ttr",
+                  "Apoa2", "Apoe", "Cystm1", "Emb", "Spink1", "Amot", "Krt19")
+```
+
+
+```{r}
+p <- plotEmbedding(
+    ArchRProj = proj, 
+    colorBy = "GeneScoreMatrix_geneBody", 
+    name = marker_genes, 
+    embedding = "UMAP",
+    quantCut = c(0.01, 0.95),
+    imputeWeights = NULL
+)
+p
+```
+
+
+```{r}
+p <- plotEmbedding(
+    ArchRProj = proj, 
+    colorBy = "GeneScoreMatrix_geneBody", 
+    name = marker_genes, 
+    embedding = "UMAP",
+    quantCut = c(0.01, 0.95),
+    imputeWeights = NULL
+)
+
+p
+```
+
+
+
+```#{r}
+tibble(gene = rownames(assays(scores)[[1]]),
+          mean = Matrix::rowMeans(assays(scores)[[1]]),
+          var = MatrixGenerics::rowVars(assays(scores)[[1]])) %>% 
+  mutate(log10_mean = log10(mean),
+         log10_var = log10(var)) %>% ggplot() +
+  geom_point(aes(x = log10_mean, y = log10_var)) +
+  labs(title = "Gene activity score from scATAC-seq")
+
+
+tibble(gene = rownames(expr),
+          mean = Matrix::rowMeans(expr),
+          var = MatrixGenerics::rowVars(expr)) %>% 
+  mutate(log10_mean = log10(mean),
+         log10_var = log10(var)) %>% ggplot() +
+  geom_point(aes(x = log10_mean, y = log10_var)) +
+  labs(title = "Gene expression")
+
+```
+
+
+```{r}
+#saveArchRProject(proj, "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data_new/Kathi/03_added_matrices/", load = FALSE)
+
+proj <- loadArchRProject("/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data_new/Kathi/03_added_matrices/")
+```
+
+
+# Peak-to-gene links
+
+ArchR offers the possibility to compute peak-to-gene links that are based on simple 
+correlation between gene expression and chromosome accessibility. For this
+cell aggregates are used. Below I compute these peak-to-gene links. The default is 
+to consider only peaks which are within 250kb of the TSS. Here I allowed for
+links across the entire genome, since one can still filter based on distance later on.
+
+```{r, eval  = FALSE}
+proj <- addPeak2GeneLinks(  ArchRProj = proj,
+  reducedDims  = "LSI_ATAC",
+  useMatrix = "GeneExpressionMatrix",
+  maxDist = 400000000,
+  verbose = FALSE, 
+  )
+
+
+p2g <- getPeak2GeneLinks(
+  ArchRProj = proj,
+  corCutOff = -1,
+  resolution = 1,
+  FDRCutOff = 1e-04,
+  varCutOffATAC = .25,
+  varCutOffRNA = .25, 
+  returnLoops = FALSE
+)
+
+saveRDS(p2g, "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data_new/Kathi/p2g_links")
+
+saveArchRProject(proj, "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data_new/Kathi/04_p2g_links/", load = FALSE)
+
+```
+
+
+```{r}
+proj <- loadArchRProject("/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data_new/Kathi/04_p2g_links/")
+
+p2g <- readRDS("/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data_new/Kathi/p2g_links")
+
+
+p2g %>% as.data.frame() %>%
+  ggplot() +
+  geom_histogram(aes(x = Correlation, fill =   "#1A1A1A" ), bins = 200 ) +
+  labs(title = "Peak-to-gene links across entire chromosome") +
+  # theme(plot.title = element_text(hjust = 0.5),
+  #       legend.position = "None", 
+  #       panel.grid.major = element_line(colour = "grey"),   # Major grid lines
+  #       #strip.background = element_rect(colour = "black", fill = "white"),
+  #       panel.background = element_rect(fill = "white", colour = "black")) +
+    scale_fill_brewer(palette="Set3") +
+    theme(
+      #axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+          plot.title = element_text(hjust = 0.5),
+          legend.position = "None", 
+          panel.grid.major = element_line(colour = "grey"),   # Major grid lines
+          #strip.background = element_rect(colour = "black", fill = "white"),
+          panel.background = element_rect(fill = "white", colour = "black"))
+
+
+ggsave("Kathi/plots/p2g_links_entire_chormosome.pdf")
+
+```
+```{r}
+p2g %>% head
+```
+
+
+```{r}
+
+peaks <- metadata(p2g)$peakSet %>% 
+  as.data.frame() %>%
+  rownames_to_column("idxATAC") %>%
+  mutate(idxATAC = as.integer(idxATAC)) %>%
+  dplyr::filter(idxATAC %in% p2g$idxATAC) %>%
+  mutate(middle = start + floor(width/2))
+
+genes_in_p2g <- metadata(p2g)$geneSet$name
+
+genes <- getGeneAnnotation(proj)[["genes"]] %>%
+  as.data.frame() %>%
+  rownames_to_column("idxRNA") %>%
+  mutate(idxRNA = as.integer(idxRNA)) %>% 
+  dplyr::filter(idxRNA %in% p2g$idxRNA) %>%
+  mutate(tss = ifelse(strand == "+", start, end))
+
+
+comb <- left_join(p2g %>% as.data.frame(), 
+          genes, by = "idxRNA", copy = TRUE, suffix = c(".p2g", ".rna"))
+
+
+comb <- left_join(comb, peaks, by = "idxATAC", copy = TRUE,
+                  suffix = c(".rna",".atac"))
+
+
+comb <- comb %>% mutate(distance = abs(middle - tss)) %>%
+  mutate(type = ifelse(Correlation > 0, "positive", "negative"))
+
+stopifnot(all(!is.na(comb$tss)))
+
+
+```
+
+```{r, fig.width=10, fig.height=6}
+comb %>%
+  ggplot() +
+  geom_density(aes(x = distance, fill = type), alpha = .6) +
+  scale_fill_brewer(palette = "Set3") +
+  guides(fill=guide_legend(title="Correlation")) +
+  labs(x = "Distance between peak and gene") +
+  theme(axis.text.x = element_text(size = 15), #angle = 90, hjust=1,
+        axis.text.y = element_text(size = 15),
+        axis.title.x = element_text(size = 20), # change size of axis title
+        axis.title.y = element_text(size = 20),
+        plot.title = element_text(hjust = 0.5, size = 25),
+        strip.text.x = element_text(size = 20),
+        legend.title = element_text(size = 20),
+        legend.text = element_text(size = 15),
+      legend.position = c(.9, 0.8), 
+      legend.box.background = element_rect(colour = "black"),
+      panel.grid.major = element_line(colour = "grey"),   # Major grid lines
+      strip.background = element_rect(colour = "black", fill = "white"),
+      panel.background = element_rect(fill = "white", colour = "black"),
+      aspect.ratio = .4)
+
+
+ggsave("Kathi/plots/distance_peak_genes.pdf")
+
+```
+
+```{r, fig.width=10, fig.height=6}
+comb %>%
+  ggplot() +
+  scale_fill_brewer(palette = "Set3") +
+  geom_density(aes(x = abs(Correlation), fill = type), alpha = .6) +
+  labs(x = "Absolute Correlation") +
+  guides(fill=guide_legend(title="Correlation")) +
+  theme(axis.text.x = element_text(size = 15),
+        axis.text.y = element_text(size = 15),
+        axis.title.x = element_text(size = 20), # change size of axis title
+        axis.title.y = element_text(size = 20),
+        plot.title = element_text(hjust = 0.5, size = 25),
+        strip.text.x = element_text(size = 20),
+        legend.text = element_text(size = 15),
+        legend.title = element_text( size = 20),
+      legend.position = c(.9, 0.8), 
+      legend.box.background = element_rect(colour = "black"),
+      panel.grid.major = element_line(colour = "grey"),   # Major grid lines
+      strip.background = element_rect(colour = "black", fill = "white"),
+      panel.background = element_rect(fill = "white", colour = "black"),
+      aspect.ratio = .4)
+
+ggsave("Kathi/plots/correlation_pos_neg_p2g.pdf")
+
+```
+
+
+
+```{r}
+comb %>%
+  ggplot() +
+  geom_histogram(aes(x = distance, fill = type), alpha = 0.9, bins = 200) +
+  scale_fill_brewer(palette = "Set3") +
+  geom_density(aes(x = distance, fill = type), alpha = .3)
+```
+
+```{r, fig.width = 10, fig.height=6}
+
+comb %>%
+  dplyr::filter(distance < 250000) %>%
+  ggplot() +
+  geom_histogram(aes(x = distance, fill = type), alpha = 0.9, bins = 200) +
+  scale_fill_brewer(palette = "Set3") +
+  labs(title)
+
+comb %>%
+  dplyr::filter(distance < 250000) %>%
+  arrange(distance) %>%
+  mutate(bin=cut_width(distance, width=10000, boundary=0)) %>%
+  ggplot() +
+  geom_boxplot(aes(x = bin, y = abs(Correlation), fill = type)) +
+  scale_fill_brewer(palette = "Set3") +
+  theme(
+      axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+      plot.title = element_text(hjust = 0.5),
+      legend.position = "None", 
+      panel.grid.major = element_line(colour = "grey"),   # Major grid lines
+      #strip.background = element_rect(colour = "black", fill = "white"),
+      panel.background = element_rect(fill = "white", colour = "black"))
+
+comb %>%
+  dplyr::filter(distance < 250000) %>%
+  arrange(distance) %>%
+  mutate(bin=cut_width(distance, width=10000, boundary=0)) %>%
+  ggplot() +
+  geom_boxplot(aes(x = bin, y = abs(Correlation), fill = type)) + #, fill = type)) +
+  labs(x = "Distance, 10kb bins", title = "Peak-to-gene links within +/- 250kb of TSS", y = "Absolute Correlation") +
+  facet_wrap(vars(type)) +
+  scale_fill_brewer(palette = "Set3") +
+  theme(axis.text.x = element_text(angle = 90, hjust=1, size = 15),
+        axis.text.y = element_text(size = 15),
+        axis.title.x = element_text(size = 20), # change size of axis title
+        axis.title.y = element_text(size = 20),
+        plot.title = element_text(hjust = 0.5, size = 25),
+        strip.text.x = element_text(size = 20),
+      legend.position = "None", 
+      panel.grid.major = element_line(colour = "grey"),   # Major grid lines
+      strip.background = element_rect(colour = "black", fill = "white"),
+      panel.background = element_rect(fill = "white", colour = "black"))
+
+```
+
+```{r, fig.width = 10, fig.height=6}
+comb %>%
+  dplyr::filter(distance < 250000) %>%
+  ggplot() +
+  geom_density_2d_filled(aes(x = distance, y = abs(Correlation)), alpha = .6) + 
+  facet_wrap(vars(type)) +
+  labs(x = "Distance between peak and gene", 
+       title = "Peak-to-gene links within +/- 250kb of TSS", 
+       y = "Absolute Correlation") +  
+   # scale_fill_brewer(palette = "Set3") +
+  theme(axis.text.x = element_text(angle = 45, hjust=1, size = 15),
+        axis.text.y = element_text(size = 15),
+        axis.title.x = element_text(size = 20), # change size of axis title
+        axis.title.y = element_text(size = 20),
+        plot.title = element_text(hjust = 0.5, size = 25),
+        strip.text.x = element_text(size = 20),
+      legend.position = "None", 
+      panel.grid.major = element_line(colour = "grey"),   # Major grid lines
+      strip.background = element_rect(colour = "black", fill = "white"),
+      panel.background = element_rect(fill = "white", colour = "black"))
+```
+
+
+```{r}
+
+comb %>% 
+  dplyr::filter(Correlation > 0 & distance < 10000000) %>%
+  mutate(bin=cut_width(distance, width=1000000, boundary=0)) %>%
+  ggplot() +
+  geom_boxplot(aes(x = bin, y = abs(Correlation)))
+
+  
+
+
+comb %>%
+  dplyr::filter(distance < 100000) %>%
+  mutate(bin=cut_width(distance, width=10000, boundary=0)) %>%
+  ggplot() +
+  geom_boxplot(aes(x = bin, y = abs(Correlation), fill = type)) +
+  scale_fill_brewer(palette = "Set3")
+```
+
+
+```{r, fig.width=10, fig.height=6}
+peakset <- getPeakSet(proj)
+celltype_vector <- names(peakset)
+names(peakset) <- seq.int(length(peakset))
+peakset %>% as.data.frame() %>%
+  mutate(celltypes = celltype_vector)  %>% 
+  ggplot() +
+  geom_bar(aes(x = celltypes, fill = peakType), position = "fill") +
+  guides(fill=guide_legend(title="Peak Type")) +
+  labs(x = "celltypes", y = "percentage") +
+  scale_fill_brewer(palette = "Set3") +
+  #theme(axis.text.x = element_text(angle = 45, vjust = 0.8, hjust=1)) +
+  theme(axis.text.x = element_text(angle = 45, hjust=1, size = 12),
+        axis.text.y = element_text(size = 15),
+        axis.title.x = element_text(size = 15), # change size of axis title
+        axis.title.y = element_text(size = 20),
+        plot.title = element_text(hjust = 0.5, size = 25),
+        legend.title = element_text(size = 12),
+      panel.grid.major = element_line(colour = "grey"),   # Major grid lines
+      panel.background = element_rect(fill = "white", colour = "black"),
+      aspect.ratio = 0.4)
+
+
+ggsave("Kathi/plots/peak_types.pdf")
+
+
+```
+
+
+
+# ChromVar Motifs
+
+Below, I first add Motif annotations to the ArchR object, using cisbp motifs. Then, I compute Background Peaks using ArchR which simply incorporates ChromVar. Finally,
+Motif deviations are computed and saved in the Matrix slot "MotifMatrix". 
+
+```{r, eval = FALSE}
+proj <- addMotifAnnotations(ArchRProj = proj, motifSet = "cisbp", name = "Motif")
+
+
+proj <- addBgdPeaks(proj, 
+                         nIterations = 50) # 50 background peaks are selected
+
+
+proj <- addDeviationsMatrix(
+  ArchRProj = proj, 
+  peakAnnotation = "Motif",
+  matrixName = "MotifMatrix",
+  force = TRUE
+)
+
+saveArchRProject(proj, "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data_new/Kathi/05_chromvar/")
+```
+
+
+```{r, eval = FALSE}
+VarDev <- getVarDeviations(proj, name = "MotifMatrix", plot = FALSE)
+
+
+plotVarDev <- getVarDeviations(proj, name = "MotifMatrix", plot = TRUE)
+
+```
+
+
+
+### UMAPS ChromVar deviations
+
+```#{r}
+motifs <- c("Gata1", "Gata2", "Gata3", "Gata4", "Gata5", "Gata6")
+
+markerMotifs <- getFeatures(proj, select = paste(motifs, collapse="|"), 
+                            useMatrix = "MotifMatrix", )
+
+
+p <- plotEmbedding(
+    ArchRProj = proj, 
+    colorBy = "MotifMatrix", 
+    name = sort(markerMotifs), 
+    embedding = "UMAP",
+    imputeWeights = getImputeWeights(proj)
+)
+
+p2 <- lapply(p, function(x){
+    x + guides(color = FALSE, fill = FALSE) + 
+    theme_ArchR(baseSize = 6.5) +
+    theme(plot.margin = unit(c(0, 0, 0, 0), "cm")) +
+    theme(
+        axis.text.x=element_blank(), 
+        axis.ticks.x=element_blank(), 
+        axis.text.y=element_blank(), 
+        axis.ticks.y=element_blank()
+    )
+})
+```
+
+
+# Pseudotime
+
+```{r, eval = FALSE}
+proj <- loadArchRProject("Kathi/07_gene_acitivity_scores/")
+```
+
+
+```{r, eval = FALSE}
+trajectory <- c("Hematoendothelial_progenitors", "Blood_progenitors_1",
+                "Blood_progenitors_2", "Erythroid1", "Erythroid2", "Erythroid3")
+```
+
+
+
+```{r, eval = FALSE}
+proj <- addTrajectory(proj,
+                      name  = "Blood",
+                      groupBy = "celltype.mapped",
+                      trajectory = trajectory,
+                      embedding = "UMAP",
+                      force = TRUE)
+```
+
+```{r, eval = FALSE}
+p <- plotTrajectory(proj, trajectory = "Blood", colorBy = "cellColData", name = "Blood")
+p[[1]]
+```
+
+
+```{r, eval = FALSE}
+plotPDF(p, name = "blood_trajectory_archr.pdf", ArchRProj = proj, addDOC = FALSE, width = 5, height = 5)
+
+```
+
+
+
+```{r, eval = FALSE}
+proj <- addImputeWeights(proj,
+                         reducedDims = "LSI_ATAC")
+
+```
+
+
+```{r, eval = FALSE}
+p1 <- plotTrajectory(proj, trajectory = "Blood", colorBy = "GeneScoreMatrix_distal", name = "Gata1", continuousSet = "horizonExtra")
+p2 <- plotTrajectory(proj, trajectory = "Blood", colorBy = "GeneExpressionMatrix", name = "Gata1", continuousSet = "blueYellow")
+p3 <- plotTrajectory(proj, trajectory = "Blood", colorBy = "MotifMatrix", name = "deviations:Gata1_387", continuousSet = "blueYellow")
+```
+
+
+```{r}
+ggAlignPlots(p1[[1]], p2[[1]], p3[[1]],type = "h")
+
+
+```
+
+
+```{r, eval = FALSE}
+ggAlignPlots(p1[[2]], p2[[2]], p3[[2]], type = "h")
+
+```
+
+```{r, eval = FALSE}
+saveArchRProject(proj, "08_trajectories/", load = FALSE)
+```
+

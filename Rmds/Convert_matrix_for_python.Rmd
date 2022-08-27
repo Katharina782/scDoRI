@@ -1,0 +1,170 @@
+---
+title: "Save gene expression, gene scores and p2g gene scores for use in python"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 5
+    code_folding: hide
+    toc_float: true
+    code_download: true
+    theme: cosmo
+    highlight: textmate
+---
+
+<style>
+body {
+text-align: justify}
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(cache = FALSE, autodep = TRUE, 
+                      collapse = TRUE, message = FALSE)
+knitr::opts_knit$set(root.dir = "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/")
+setwd("/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/")
+
+set.seed(1)
+```
+
+  
+```{r}
+## Load libraries
+
+
+suppressPackageStartupMessages({
+library(ArchR)
+library(rhdf5)
+library(tidyverse)
+library(reticulate)
+library(zellkonverter)
+library(Matrix)
+library(dichromat)
+#library(caret)
+library(anndata)
+library(SummarizedExperiment)
+h5disableFileLocking()})
+library(reticulate)
+```
+
+```{r}
+#use_python(python = "/omics/groups/OE0533/internal/katharina/scvi2/bin/python", required = TRUE)#, version = "3.7.12", condaenv = "/omics/groups/OE0533/internal/katharina/scvi2")
+#conda_list()[[1]][5] %>% use_condaenv(required = TRUE)
+```
+
+
+Prepare gene expression and gene scores for cell aggregates in python and correlations.
+
+```{r}
+proj <- loadArchRProject("12_Ricards_peaks_ChromVar/")
+gene_expr <- getMatrixFromProject(proj, useMatrix = "GeneExpressionMatrix")
+gene_expr_mat <- assays(gene_expr)[[1]]
+gene_expr_mat[1:5, 1:5]
+
+# create an anndata object SCE of gene expression
+ad <- AnnData(
+  X = t(gene_expr_mat),
+  obs = as.data.frame(colData(gene_expr)),
+  var = as.data.frame(rowData(gene_expr))
+)
+
+# save anndata object
+write_h5ad(
+  anndata = ad,
+  filename = "jupyter_notebooks/ArchR_gene_expr.h5ad"
+)
+
+# save gene scores
+gene_scores <- getMatrixFromProject(proj, useMatrix = "GeneScoreMatrix")
+gene_scores_mat <- assays(gene_scores)[[1]]
+
+
+sce <- SingleCellExperiment(list(scores=scores_mat), 
+                            rowData = as.data.frame(rowData(scores)),
+                            colData = as.data.frame(colData(scores)))
+
+writeH5AD(sce, "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/archr_scores_anndata.h5ad", X_name = "scores")
+
+
+write.table(gene_scores_mat, file = "jupyter_notebooks/archr_gene_scores_table.csv",row.names = TRUE, col.names = TRUE)
+
+# # create AnnData ojbect
+# ad <- AnnData(
+#   X =c(t(gene_scores_mat), t(gene_expr_mat)),
+#   obs = as.data.frame(colData(gene_scores)),
+#   var = as.data.frame(rowData(gene_scores))
+# )
+# 
+# # save anndata object
+# # I was not able to read this file with scanpy
+# write_h5ad(
+#   anndata = ad,
+#   filename = "jupyter_notebooks/ArchR_gene_scores.h5ad"
+# )
+```
+
+### Save gene expression
+
+```#{r}
+rna <- readRDS("Seurat_objects/")
+counts <- rna@assays$
+  write.table(coutns, file = "jupyter_notebooks/counts_matrix.tsv", row.names = TRUE, col.names = TRUE,sep = "\t")
+```
+
+
+# Save p2g scores
+```{r}
+proj1 <- loadArchRProject("15_gene_scores_from_p2g_as_gene_expr_matrix/")
+p2g_scores  <- getMatrixFromProject(proj1, useMatrix = "GeneExpressionMatrix")
+gene_scores_mat <- assays(p2g_scores )[[1]]
+rownames(gene_scores_mat) <- rowData(p2g_scores )$name
+gene_scores_mat[1:5, 1:5]
+
+
+
+sce <- SingleCellExperiment(list("p2g_scores"=scores_mat), 
+                            rowData = as.data.frame(rowData(scores)),
+                            colData = as.data.frame(colData(scores)))
+
+writeH5AD(sce, "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/p2g_scores_anndata.h5ad", X_name = "p2g_scores")
+
+
+# write.table(gene_scores_mat, file = "jupyter_notebooks/archr_gene_scores_p2g_table.csv",row.names = TRUE, col.names = TRUE)
+# 
+# 
+# # create an anndata object SCE of gene scores
+# ad <- AnnData(
+#   X = t(scores_mat),
+#   obs = as.data.frame(colData(gene_scores)),
+#   var = as.data.frame(rowData(gene_scores))
+# )
+# 
+# write_h5ad(anndata = ad,
+#            filename = "jupyter_notebooks/ArchR_gene_scores_p2g.h5ad"
+#)
+```
+
+
+```{r}
+marker_genes <- c("Hba-a2", "Hba-a1",  "Hbb-bh1")
+p <- plotEmbedding(
+    ArchRProj = proj, 
+    colorBy = "GeneExpressionMatrix", 
+    name = marker_genes, 
+    embedding = "UMAP",
+    quantCut = c(0.01, 0.95),
+    imputeWeights = getImputeWeights(proj)
+)
+
+p
+```
+
+
+
+
+
+# Worked:
+
+
+
+
+
+

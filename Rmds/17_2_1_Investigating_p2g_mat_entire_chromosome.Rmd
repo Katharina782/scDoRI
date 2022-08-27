@@ -1,0 +1,2461 @@
+---
+title: "Investigating p2g_mat"
+bibliography: references.bib
+output: 
+  html_document:
+    toc: true
+    toc_depth: 2
+    code_folding: hide
+    toc_float: true
+    code_download: true
+    theme: cosmo
+    highlight: textmate
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(cache = FALSE)
+knitr::opts_knit$set(root.dir = "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data")
+setwd("/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data")
+set.seed(1)
+```
+
+```{r}
+suppressPackageStartupMessages({
+
+library(ArchR)
+library(tidyverse)
+library(SingleCellExperiment)
+library(zellkonverter)
+library(dtwclust)
+})
+```
+
+```{r}
+proj <- loadArchRProject("12_Ricards_peaks_ChromVar/", showLogo = FALSE)
+
+
+#proj <- loadArchRProject("11_added_Ricards_peaks_p2g_entire_chromosome", showLogo = FALSE)
+#saveArchRProject(proj, "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/11_added_Ricards_peaks_p2g_entire_chromosome")
+
+```
+
+# P2G-link matrix 
+
+In order to get gene regulatory links, one can compute a simple correlation
+between accessible peaks and gene expression, in order to find peaks whose activity
+is highly correlated with expression of a certain gene. These are potential 
+enhancers of a gene. Since single cell data is very sparse, the common way to 
+compute correlatiosn is by aggregating accessibility and gene expression data
+across cell aggregates. In ArchR this is done by sampling 500 cells from the 
+entire dataset and finding the 50 nearest neighbors of these cells. These cell
+aggregates therefore reprsent groups of similar cells and can be used to compute
+correlations. 
+
+Notably, for computing links within a certain distance on the chromosome, ArchR
+does not take into consideration the strand orientation, but computes the 
+distance between the "start" coordinate and the peak middle coordinate. However,
+on the minus strand the TSS is the "end" coordinate. For the correlations this
+is not important, but in my computations I will use the TSS coordinate in
+a strand-aware fashion.
+
+
+Based on these putative peak-to-gene links, it is possible to compute gene activity
+scores. If these scores recapitulate gene expression well, this is a 
+validation of the links. Nevertheless, it is expected that gene activity scores
+correlate highly with gene expression, since the peaks used for the computation 
+are highly correlated with the genes per definition. In the following you will find a function to compute gene activity scores from peak-to-gene links, adpated from 
+Cicero, where gene activit scores are computed from co-accessible peaks.
+
+Furthermore, since peaks which are farther away from a gene on the genome are less likely 
+to regulate this gene, it is common to use distance weigths to penalize peaks which
+are highly correlated, but distant. However, I observed that using distance weigths
+decreases the correlation with gene expression, with less steep decay rates 
+resulting in better gene activity scores. This shows that the distance weights 
+lead to a lot of zero values when multiplied with the correlation values. Still,
+biologically very distant peaks are probably not correlated with a promoter, because 
+they are intereacting, but more likely, are arbitrary correlations. Finding a 
+good trade-off between considering correlations across large distances, but also
+using prior knowledge about the biology and restricting the links to a certain 
+window is non-trivial. The correct distance decay rate  probably depends on each individual gene and might differ across celltypes.
+
+Yet another approach would be to use only peaks, which are within +/- 100kb of the
+TSS of a gene, thereby, removing any peaks which are far away. This is similar to 
+the approach in ArchR. Here, the gene activity scores for each gene are computed
+based on all peaks which are within +/- 100bp of the TSS of the gene. As you 
+will see in the following plots using this approach leads to very high correlations
+between gene expression and gene activity scores. Computing the scores based on 
+peak-to-gene links offers only a minor improvement. 
+
+The main purpose of the entire excercise was to be able to compare the goodness 
+of these links to links obtained using scDoRi. This relationship will have to be 
+explored further. 
+
+```#{r}
+proj <- addPeak2GeneLinks(ArchRProj = proj,
+  reducedDims  = "atac_LSI_100000",
+  useMatrix = "GeneExpressionMatrix",
+  maxDist = 400000000,
+  verbose = TRUE
+  )
+
+p2g <- getPeak2GeneLinks(
+  ArchRProj = proj,
+  corCutOff = -1,
+  resolution = 1,
+  FDRCutOff = 1e-04,
+  varCutOffATAC = .25,
+  varCutOffRNA = .25, 
+  returnLoops = FALSE
+)
+```
+
+
+```{r}
+#saveRDS(p2g, "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/Rmds/peak2gene_links_entire_chromosome_25_04_2022")
+p2g <- readRDS( "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/Rmds/peak2gene_links_entire_chromosome_25_04_2022")
+```
+
+Read in the peak accessibility matrix and the gene expression matrix:
+
+```{r}
+# get peak matrix
+peaks <- getMatrixFromProject(proj, useMatrix = "PeakMatrix", binarize = FALSE)
+peak_mat <- assays(peaks)[[1]]
+
+# read in gne expresssion matrix
+gene_expr <- getMatrixFromProject(proj, 
+                                  useMatrix = "GeneExpressionMatrix")
+expr_mat <- assays(gene_expr)[[1]]
+rownames(expr_mat) <- rowData(gene_expr)$name
+
+# read in archr gene activity scores
+archr_scores <- getMatrixFromProject(proj, useMatrix = "GeneScoreMatrix")
+
+cp_names <- colnames(colData(archr_scores))
+cp_names[20] <- "celltypes"
+colnames(colData(archr_scores)) <- cp_names
+
+archr_scores_mat <- assays(archr_scores)[[1]]
+rownames(archr_scores_mat) <- rowData(archr_scores)$name
+```
+
+We will only use peaks linked to highly variable genes to compute gene
+activity scores.
+
+```{r}
+hvg_list <- read.table("jupyter_notebooks/hvg_list", sep = ",")$x
+
+
+# get RNA index of hvg
+meta_rna <- rowData(gene_expr) %>% as.data.frame() %>% mutate(row_index = seq(nrow(.)))
+idx <- (meta_rna %>% filter(name %in% hvg_list))$row_index
+
+expr_sub <- expr_mat[idx, ]
+```
+
+```{r}
+seacells <- read_csv("jupyter_notebooks/SEACell_files/SEACell_assignment")
+```
+
+
+```{r}
+links <- p2g %>% as.data.frame() %>% 
+  filter(Correlation > 0.2) %>% 
+  filter(idxRNA %in% idx) 
+
+stopifnot(all(links$Correlation > 0))
+```
+
+
+
+Create a p2g link matrix
+
+```{r}
+p2g_mat <- sparseMatrix(i = links$idxRNA,
+             j = links$idxATAC,
+             x= links$Correlation, 
+             dims = c(dim(expr_mat)[1],
+             dim(peak_mat)[1]))
+
+rownames(p2g_mat) <- rowData(gene_expr)$name
+
+
+rownames(peak_mat) <- seq.int(dim(peak_mat)[1])
+colnames(p2g_mat) <- seq.int(dim(peak_mat)[1])
+```
+
+
+
+Filter and prepare peak matrix and p2g links matrix:
+
+```{r}
+# remove columns of peaks which are not linked to any peak
+p2g_mat_sub <- p2g_mat[, colSums(p2g_mat) != 0]
+# use only highly variable genes
+p2g_mat_sub <- p2g_mat_sub[hvg_list, ]
+# remove any genes which are not linked to any peak
+p2g_mat_sub <- p2g_mat_sub[rowSums(p2g_mat_sub) != 0, ]
+stopifnot(all(rownames(p2g_mat_sub) %in% hvg_list))
+stopifnot(any(is.na(p2g_mat_sub) == FALSE))
+
+# keep only peaks which are linked to genes in the accessibility matrix
+peak_mat_sub <- peak_mat[colnames(p2g_mat_sub), ]
+stopifnot(rownames(peak_mat_sub) == colnames(p2g_mat_sub))
+#stopifnot(any(is.na(peak_mat_sub) == FALSE))
+stopifnot(dim(peak_mat_sub)[1] == dim(p2g_mat_sub)[2])
+
+expr_mat_sub <- expr_mat[as.vector(rownames(p2g_mat_sub)), ]
+```
+
+
+
+
+
+
+### Function to compute gene activity scores
+
+```{r}
+gene_activity_scores <- function(peak_mat, p2g_mat) {
+  #peak_mat_subset <- peak_mat[colnames(p2g_mat), ]
+  # normalize the p2g matrix by the total number of peaks linked to each gene
+  p2g_mat <- p2g_mat / rowSums(p2g_mat)
+  print(paste0("normalized the p2g matrix"))
+  stopifnot(any(is.na(p2g_mat)) == FALSE)
+  # Now we can compute a weighted sum of peak2gene correlations for each
+  # peak and gene
+  scores <- p2g_mat %*% peak_mat
+  print(paste0("Computed weightes sum of peaks for each gene and cell"))
+  # create a dataframe for computing the linear model
+  linear_model_df <- data.frame(cell = colnames(scores),
+                               total_activity = colSums(scores),
+                               total_sites = colSums(peak_mat))
+  # compute a linear model
+  activity_model <- stats::lm(log(total_activity) ~ log(total_sites),
+                            data = linear_model_df)
+  # extract the fitted model
+  linear_model_df$fitted_curve <- exp(as.vector(predict(activity_model,
+                                                         type = "response")))
+  # compute size factors from fitted model
+  size_factors <- mean(linear_model_df$fitted_curve) / linear_model_df$fitted_curve
+  # create diagonal matrix containing the size factors
+  size_factors_mat <- Matrix::Diagonal(x = size_factors)
+  #row.names(size_factors_mat) <- linear_model_df$cell
+  # normalize by library depth size factors
+  norm_scores <- Matrix::t(size_factors_mat %*% Matrix::t(scores))
+  print(paste0("Normalized for library size"))
+  # exponentiate, because RNA counts are log-normally distributed
+  norm_scores@x <- pmin(1e9, exp(norm_scores@x) - 1)
+  print(paste0("Exponentiated matrix"))
+  
+  # free some memory
+  #rm(peak_mat_subset)
+  rm(activity_model)
+  rm(scores)
+  gc(reset = TRUE)
+
+  # scale with total activity scores again
+  scale_factors <- Matrix::Diagonal(x = 1/Matrix::colSums(norm_scores))
+  print(paste0("Divided by total activity to get value between zero and one"))
+  
+  final_scores <- Matrix::t(scale_factors %*% Matrix::t(norm_scores))
+
+  return(final_scores)
+
+}
+
+```
+
+```{r}
+p2g_scores <- gene_activity_scores(peak_mat_sub, p2g_mat_sub)
+#saveRDS(p2g_scores, "ArchR_p2g_based_gene_activity_scores")
+```
+
+
+
+TODO: Add functions here, add ArchR aggregates and compute correlations as 
+scatter & density plot
+
+# Example of p2g links within 250kb
+
+
+```{r}
+cp_names <- colnames(colData(gene_expr))
+cp_names[20] <- "celltypes"
+colnames(colData(gene_expr)) <- cp_names
+
+#rownames(expr_mat) <- rowData(gene_expr)$name
+genes <- expr_mat[as.vector(rownames(p2g_scores)), ]
+
+stopifnot(any(rownames(genes) == rownames(p2g_scores)))
+
+
+
+# create matrix to store aggregates
+expr_agg <- matrix(data = 0, 
+                   nrow = dim(genes)[1],
+                   ncol = length(unique(colData(gene_expr)$celltypes)),
+                   dimnames  = list(rownames(p2g_scores),
+                   unique(colData(gene_expr)$celltypes)))
+
+
+# fill matrix
+for (celltype in unique(colData(gene_expr)$celltypes)){
+  barcodes <- rownames(colData(gene_expr) %>% 
+                         as.data.frame() %>% 
+                         filter(celltypes == celltype))
+  expr_agg[, celltype] <- rowSums(genes[, barcodes])
+}
+
+
+
+p2g_score_agg <- matrix(data = 0, 
+                        nrow = dim(p2g_scores)[1],
+                        ncol = length(unique(colData(gene_expr)$celltypes)),
+                        dimnames = list(rownames(p2g_scores),
+                                        unique(colData(gene_expr)$celltypes)))
+
+for (celltype in unique(colData(gene_expr)$celltypes)){
+  barcodes <- rownames(colData(gene_expr) %>% 
+                         as.data.frame() %>% 
+                         filter(celltypes == celltype))
+  p2g_score_agg[, celltype] <- rowSums(p2g_scores[, barcodes])
+}
+```
+
+
+
+
+Correlations between aggregated gene expression and aggregated p2g scores for 
+celltypes.
+
+
+
+```{r}
+correlations_250kb = c()
+for (i in seq.int(dim(p2g_score_agg)[1])){
+  rowa <- expr_agg[i, ]
+  rowa <- rowa - mean(rowa)
+  rowa <- rowa / sd(rowa)
+  
+  rowb <- p2g_score_agg[i, ]
+  rowb <- rowb - mean(rowb)
+  rowb <- rowb / sd(rowb)
+  
+  corr_value = mean(rowa * rowb)
+  correlations_250kb <- c(correlations_250kb, corr_value)
+  
+} 
+names(correlations_250kb) <- rownames(p2g_score_agg)
+
+plot_250kb <- ggplot() + geom_histogram(aes(x = correlations_250kb), bins = 200, fill="#69b3a2") +
+  labs(title = "Gene activity scores computed based on p2g links on entire chromosome")
+plot_250kb
+```
+
+
+
+# KNN cell aggregates from ArchR
+
+To compute peak-to-gene links, cell aggregates are created to overcome sparsity as described above. To create cell aggregates, 500 cells are 
+randomly sampled from a low-dimensional embedding, eg. PCA space and the 50 nearest neighbors of each cell are determined. This way ArchR creates 500 
+aggregates, each consisting of 50 cells. Below, I used these aggregates for computing correlations between different gene activity scores, however the 
+results did not look very usable, since a lot of negative correlations were obtained this way. This might be due to theses aggregates not being
+representative, too small or too few. I decided to not use these aggreagates, but instaed used SEACells, which is a tool for creating 
+cell aggregates ("metacells"). 
+
+```#{r}
+rna_knn <- readRDS("11_added_Ricards_peaks/Peak2GeneLinks/seRNA-Group-KNN.rds")
+rna_agg_mat <- assays(rna_knn)[[1]]
+rownames(rna_agg_mat) <- rowData(rna_knn)$name
+
+cell_agg_list <- metadata(rna_knn)[[1]]
+
+
+knn_aggregates <- function(matrix, cell_agg_list){
+  # empty matrix to store aggregates
+  agg <- matrix(data = 0,
+                nrow = dim(matrix)[1],
+                ncol = length(cell_agg_list),
+                dimnames = list(rownames(matrix), NULL))
+  
+  for (i in seq.int(length(cell_agg_list))) {
+    agg[, i] <- rowSums(matrix[, cell_agg_list[[i]]])
+  }
+  return(agg)
+}
+
+
+rna_agg <- knn_aggregates(expr_mat_sub, cell_agg_list)
+agg_p2g_knn <- knn_aggregates(p2g_scores, cell_agg_list)
+
+archr_knn <- archr_scores_mat[as.vector(rownames(agg_p2g_knn)),]
+agg_archr_knn <- knn_aggregates(archr_knn, cell_agg_list)
+```
+
+
+```#{r}
+archr_knn <- rowwise_correlations(rna_agg, agg_archr_knn, "Archr gene activity scores")
+p2g_knn <- rowwise_correlations(rna_agg, agg_p2g_knn, "Peak-to-gene links activity scores")
+
+cowplot::plot_grid(archr_knn[[2]], p2g_knn[[2]], ncol = 2)
+
+ggplot() + geom_density_2d_filled(aes(x = p2g_knn[[1]], 
+                                      y = archr_knn[[1]]), alpha = .5) +
+  geom_point(aes(x = p2g_knn[[1]], y = archr_knn[[1]])) +
+  geom_line(aes(x = p2g_knn[[1]], y = p2g_knn[[1]]), col = "red")
+  theme(legend.position = "None") 
+
+```
+
+# Functions
+
+### Function to prep peak accessibility matrix, gene expression matrix and p2g-link matrix
+
+```#{r}
+prep_peak_p2g <- function(peak_mat, p2g_mat, hvg_list, expr_mat){
+  #rownames(peak_mat) <- seq.int(dim(peak_mat)[1])
+  #colnames(p2g_mat) <- seq.int(dim(p2g_mat)[2])
+  
+  # remove columns of peaks which are not linked to any peak
+  p2g_mat_sub <- p2g_mat[, colSums(p2g_mat) != 0]
+  # use only highly variable genes
+  p2g_mat_sub <- p2g_mat_sub[hvg_list, ]
+  # remove any genes which are not linked to any peak
+  p2g_mat_sub <- p2g_mat_sub[rowSums(p2g_mat_sub) != 0, ]
+  stopifnot(all(rownames(p2g_mat_sub) %in% hvg_list))
+  stopifnot(any(is.na(p2g_mat_sub) == FALSE))
+  
+  # keep only peaks which are linked to genes in the accessibility matrix
+  peak_mat_sub <- peak_mat[colnames(p2g_mat_sub), ]
+  stopifnot(rownames(peak_mat_sub) == colnames(p2g_mat_sub))
+  stopifnot(any(is.na(peak_mat_sub) == FALSE))
+  stopifnot(dim(peak_mat_sub)[1] == dim(p2g_mat_sub)[2])
+  
+  expr_mat_sub <- expr_mat[as.vector(rownames(p2g_mat_sub)), ]
+  stopifnot(rownames(expr_mat_sub) == rownames(p2g_mat_sub))
+  return(list(peak_mat_sub, p2g_mat_sub, expr_mat_sub))
+}
+```
+
+
+
+
+### Function to create aggregate matrices:
+
+```{r}
+# the data matrix needs to be of dimension features x cells
+# the column of the colData of the sce object where celltypes are stored
+# needs to be called "celltypes"
+create_celltype_aggregates <- function(sce, data_matrix, celltypes) {
+  #create empty matrix to store aggregates
+  agg <- matrix(data = 0,
+                nrow = nrow(data_matrix),
+                ncol = length(celltypes),
+                dimnames = list(rownames(data_matrix), celltypes))
+  
+
+  for (celltype in celltypes) {
+    barcodes <- rownames(colData(sce) %>%
+                           as.data.frame() %>%
+                           filter(celltypes == celltype))
+    agg[, celltype] <- rowSums(data_matrix[, barcodes])
+  }
+  return(agg)
+}
+
+
+create_celltype_aggregates_p2g_scores <- function(gene_expr_sce, p2g_score_matrix, celltypes) {
+    #create empty matrix to store aggregates
+  agg <- matrix(data = 0,
+                nrow = nrow(p2g_score_matrix),
+                ncol = length(celltypes),
+                dimnames = list(rownames(p2g_score_matrix), celltypes))
+  
+
+  for (celltype in celltypes) {
+    barcodes <- rownames(colData(gene_expr_sce) %>%
+                           as.data.frame() %>%
+                           filter(celltypes == celltype))
+    agg[, celltype] <- rowSums(p2g_score_matrix[, barcodes])
+  }
+  return(agg)
+}
+
+
+create_seacell_aggregates <- function(data_matrix, seacells_df){
+  agg <- matrix(data = 0,
+                nrow = nrow(data_matrix),
+                ncol = length(unique(seacells_df$SEACell)),
+                dimnames = list(rownames(data_matrix),
+                              unique(seacells_df$SEACell)))
+  #stopifnot(nrow(agg) == nrow(data_matrix))
+  for (seacell in unique(seacells_df$SEACell)){
+    #print(seacell)
+    barcodes <- (seacells_df %>% filter(SEACell == seacell))$index
+    #print(barcodes)
+    if (length(barcodes) == 1){
+      agg[, seacell] <- data_matrix[, barcodes]
+    } else{
+      agg[, seacell] <- rowSums(data_matrix[, barcodes])
+    }
+  }
+  return(agg)
+}
+
+```
+
+
+### Function to compute row-wise correlations between two matrices:
+
+```{r}
+rowwise_correlations <- function(MatrixA, MatrixB, name) {
+  intersect_genes <- intersect(rownames(MatrixA), rownames(MatrixB))
+  MatrixA <- MatrixA[intersect_genes, ]
+  MatrixB <- MatrixB[intersect_genes, ]
+  correlations <- c()
+  for (i in seq.int(dim(MatrixA)[1])) {
+    rowA <- MatrixA[i, ]
+    rowA <- rowA - mean(rowA)
+    if (sd(rowA) != 0) {
+      rowA <- rowA / sd(rowA)
+    }
+  
+    rowB <- MatrixB[i, ]
+    rowB <- rowB - mean(rowB)
+    if (sd(rowB) != 0){
+      rowB <- rowB / sd(rowB)
+    }
+    
+    corr_value <- mean(rowA * rowB)
+    correlations <- c(correlations, corr_value)
+  }
+  names(correlations) <- rownames(MatrixA)
+  plot <- ggplot() + geom_histogram(aes(x = correlations), 
+                                    bins = 200, 
+                                    fill="#69b3a2") + labs(title = paste0(name))
+  return(list(correlations, plot))
+}
+```
+
+
+### Function for ArchR KNN aggregates
+
+```{r}
+# Function to compute aggregates with knn from ArchR
+knn_aggregates <- function(matrix, cell_agg_list){
+  # empty matrix to store aggregates
+  agg <- matrix(data = 0,
+                nrow = dim(matrix)[1],
+                ncol = length(cell_agg_list),
+                dimnames = list(rownames(matrix), NULL))
+  
+  for (i in seq.int(length(cell_agg_list))) {
+    agg[, i] <- rowSums(matrix[, cell_agg_list[[i]]])
+  }
+  return(agg)
+}
+
+```
+
+# Celltype aggregates
+
+## ArchR gene activity scores
+
+To compute the correlations between gene expression and ArchR gene activity 
+scores I first aggregated cells according to celltypes to compute 
+correlations. As can be seen in the plot below, this yields very high 
+correlation values. This is as expected, since in [@Granja] the authors 
+compared 52 different ways of computing gene activity scores from ATAC-seq 
+data and found their method to be the best one. 
+
+
+```{r, fig.width=8}
+archr_scores_sub <- archr_scores_mat[as.vector(rownames(expr_mat_sub)), ]
+
+name <- "ArchR_scores, Celltype aggregates"
+
+archr_scores_agg <- create_celltype_aggregates(archr_scores, archr_scores_sub, 
+                                               unique(colData(archr_scores)$celltypes))
+stopifnot(any(is.na(archr_scores_agg)) == FALSE)
+
+corrs <- rowwise_correlations(expr_agg, archr_scores_agg, name)
+archr_corr <- corrs[1]
+cowplot::plot_grid(plot_250kb + labs(title = "P2g-links activity scores, Celltype aggregates"), corrs[[2]], ncol = 2)
+```
+
+
+
+```{r, fig.height=5, fig.width=8}
+#, fig.width = 5, fig.height=5}
+ggplot() + #geom_density2d_filled(aes(x = correlations_250kb, y = corrs[1])) #+
+  geom_point(aes(x = correlations_250kb, y = corrs[[1]])) +
+  geom_density_2d_filled(aes(x = correlations_250kb, y = corrs[[1]]), alpha = 0.5) +
+  geom_line(aes(x =  corrs[[1]],  corrs[[1]]), color = "red") +
+  labs(x = "Correlation gene expression and p2g activity scores",
+       y = "Correlation gene expression and ArchR gene activity scores",
+       title = "Celltype aggregates") +
+  theme(legend.position = "None")
+
+
+# ggplot() + geom_point(aes(x = archr_scores_sub["Hba-a1",], y = p2g_scores["Hba-a1",]))
+# ggplot() + geom_point(aes(x = archr_scores_sub["Gata6",], y = p2g_scores["Hba-a1",]))
+
+```
+
+# SEACell aggregates
+
+Instead of using celltype aggregates as above, another option is to
+use SEACells as described in [@Persad2022]. These were computed using
+Python and the resulting cell aggregates ("metacells") are used for
+aggregating gene expression and gene activity scores below. The correlations
+when using SEACells are much higher than the correlations obtained using 
+the ArchR cell aggregates. For this reason I will use SEACells for computing
+correlations in the following steps. 
+
+```{r, fig.width = 8, fig.height=5}
+
+
+seacells <- seacells %>% filter(index %in% colnames(expr_mat))
+
+stopifnot(nrow(p2g_scores) == nrow(expr_mat_sub))
+
+seacell_p2g_agg <- create_seacell_aggregates(p2g_scores, seacells)
+seacell_rna_agg  <- create_seacell_aggregates(expr_mat_sub, seacells)
+seacell_archr_agg <- create_seacell_aggregates(archr_scores_sub, seacells)
+
+
+seacell_corr_p2g <- rowwise_correlations(seacell_rna_agg , seacell_p2g_agg, 
+                                         "P2g links of entire chromosome, SEAcells" )
+
+seacell_corr_archr <- rowwise_correlations(seacell_rna_agg, seacell_archr_agg, 
+                                           "ArchR gene activity scores, SEAcells")
+
+cowplot::plot_grid(seacell_corr_p2g[[2]], seacell_corr_archr[[2]], ncol = 2)
+
+
+ggplot() + #geom_density2d_filled(aes(x = correlations_250kb, y = corrs[1])) #+
+  geom_point(aes(x = seacell_corr_p2g[[1]], y = seacell_corr_archr[[1]])) +
+  geom_density_2d_filled(aes(x = seacell_corr_p2g[[1]], y = seacell_corr_archr[[1]]), alpha = 0.5) +
+  geom_line(aes(x = seacell_corr_archr[[1]], y = seacell_corr_archr[[1]]), color = "red" )  +
+  labs(x = "Correlation gene expression and p2g activity scores",
+       y = "Correlation gene expression and ArchR gene activity scores",
+       title = "SEACells") +
+  theme(legend.position = "None")
+
+```
+
+
+
+
+# Distance weights
+
+Using ArchR [@Granja] I computed peak-to-gene links across the entire 
+chromosome, but not between chromsomes. This means that a lot of 
+correlations are found between peaks very far away from the promoter/gene
+they are linked to. Even though these correlations can be quite high and interactions
+between enhancers and promoters can occur over megabase distances, a real
+biological interaction becomes less likely the larger the distance is. Therefore, since wer are interested in biologically relevant and not
+spurious correlations. Therefore, as suggested by [@Granja], I added 
+distance weights, such that farther away peaks linked to a gene contribute
+less to the gene activity score of this particular gene. 
+
+Here, I used a distance decay from the TSS, computed as follows:
+
+$weight = e^{-(abs(distTSS/c))}$ with $c$ being a constant determining the exponential
+decay rate of the distance weights. Below I tried different rates to better understand 
+whether we can improve the gene activity scores by giving a higher weight to
+close peaks than to far away peaks. As can be seen below this did not improve, the
+scores, but rather the scores became worse, which is probably due to the fact that
+most correlation values will get very small weights this way and most peaks linked
+with a gene, even if the correlation value is high, will not contribute to the gene
+activity score anymore.
+
+**Careful: The p2g inks in ArchR are computed for peak and gene pairs which are 
+within a certain distance from each other. However, not the real TSS of a gene is
+used for this, but rater the distance between start coordinate
+of a gene and peak start coordinate, not taking into consideration the strand directionality.
+
+
+!!!!!! Check again! Because here something is wrong with the way I compute the distance weights! Sometimes I need to use the start coordinate instead of the end coordinate. Try always using the gene start coordinate instead of swapping start
+and end coordinates in the dataframe. Maybe this is done automaticall when converted 
+to dataframe?
+
+### Function to compute distance-weighted gene activity scores from p2g links
+
+```{r}
+# As input for this function it is best to use only the most highly variable genes
+distanc_weighted_gene_activity_scores <- function(p2g_mat_sub, geneModel = "exp(-distance/5000)", 
+                                                  weight = 50000,
+                                                  peak_mat, links, p2g_original, gene_expr){
+  atac_granges <- metadata(p2g_original)[[1]]
+  #rna_granges <- metadata(p2g_original)[[2]]
+  gene_anno <- rowData(gene_expr)
+  
+  # create gene annotations with start coordinate of each gene
+  # subset to contain only genes which are included in our peak2gene matrix
+  gene_anno <- gene_anno %>% as.data.frame() %>%
+    mutate(idxRNA = seq(nrow(.))) %>% 
+    filter(name %in% rownames(p2g_mat_sub)) %>%
+    mutate(strand = ifelse(strand == 1, "+", "-")) %>% 
+    mutate(start_coord = ifelse(strand == "+", start, end)) %>% 
+    rename(gene = name) #%>% GRanges()
+
+  # subset atac granges & get middle of each peak
+  pos_atac_granges <- atac_granges  %>% 
+    as.data.frame() %>%
+    mutate(idxATAC = seq(nrow(.))) %>% 
+    # group_by(seqnames) %>%
+    # mutate(idx = seq_along(seqnames)) %>% 
+    # ungroup %>%
+    #tidyr::unite(chr_idx, seqnames, idx, remove = FALSE, sep = "_") %>% 
+    filter(idxATAC %in% colnames(p2g_mat_sub)) %>% 
+    mutate(middle = start + 300) #%>% GRanges() 
+  
+  #TODO: Filter for genes!
+  stopifnot(length(unique(links$idxATAC)) == dim(pos_atac_granges)[[1]])
+  stopifnot(length(unique(links$idxRNA)) == dim(gene_anno)[[1]])
+  #p2g_filt <- p2g_original %>% as.data.frame() %>% filter(gene %in% rownames(p2g_mat))
+  
+  
+  # combine the three dataframes
+  p2g_join <- left_join(links, as.data.frame(pos_atac_granges),
+                        by = "idxATAC")
+  p2g_join <- left_join(p2g_join, as.data.frame(gene_anno),
+                        by = "idxRNA", suffix = c(".atac", ".rna"))
+
+  # compute distance and distance weights 
+  p2g_join <- p2g_join %>% 
+    mutate(distance = abs(start_coord - middle)) %>%
+    mutate(distance_weight = eval(parse(text=geneModel)))
+  
+  
+  # create distance weight matrix
+  p2g_dw <- sparseMatrix(i = p2g_join$idxRNA,
+                         j = p2g_join$idxATAC,
+                         x = p2g_join$distance_weight,
+                         dims = c(dim(assays(gene_expr)[[1]])[1],
+                                  dim(peak_mat)[1]),
+                         dimnames = list(rowData(gene_expr)$name , 
+                         seq.int(dim(peak_mat)[1])))
+
+
+  p2g_dw <- p2g_dw[as.vector(rownames(p2g_mat_sub)), colnames(p2g_mat_sub)]
+  
+  # elementwise matrix multiplication
+  weighted_p2g_mat <- p2g_mat_sub * p2g_dw
+  
+  print(paste(length(which(rowSums(weighted_p2g_mat) == 0)), "genes have only zero correlation values, so we will remove them."))
+  weighted_p2g_mat <- weighted_p2g_mat[rowSums(weighted_p2g_mat) != 0, ]
+  print(paste0("We are left with ", dim(weighted_p2g_mat)[1], " genes"))
+  
+  # compute gene activity scores based on distance-weighted peak2gene matrix
+  weighted_scores <- gene_activity_scores(peak_mat_sub, weighted_p2g_mat)
+  
+  return(weighted_scores) 
+}
+```
+
+```#{r}
+weighted_scores <- distanc_weighted_gene_activity_scores(p2g_mat_sub, geneModel = "exp(-distance/5000)", 
+                                                  weight = 50000,
+                                                  peak_mat, links, p2g, gene_expr)
+```
+## KNN aggregates
+
+
+```{r}
+rm(meta_rna)
+#rm(p2g_mat)
+gc(reset = TRUE)
+
+model_list <- c("exp(-abs(distance)/5000)", "exp(-abs(distance)/50000)",
+                "exp(-abs(distance)/500000)", "exp(-abs(distance)/5000000)")
+
+# read in knn
+rna_knn <- readRDS("11_added_Ricards_peaks_p2g_entire_chromosome/Peak2GeneLinks/seRNA-Group-KNN.rds")
+cell_agg_list <- metadata(rna_knn)[[1]]
+
+
+
+# aggregate for gene expression, ArchR gene activity scores and simple p2g links
+rna_agg <- knn_aggregates(expr_mat_sub, cell_agg_list)
+archr_knn <- archr_scores_mat[as.vector(rownames(rna_agg)),]
+agg_archr_knn <- knn_aggregates(archr_knn, cell_agg_list)
+agg_p2g_knn <- knn_aggregates(p2g_scores, cell_agg_list)
+
+# compute rowwise correlations
+archr_knn <- rowwise_correlations(rna_agg, agg_archr_knn, "Archr gene activity scores, KNN aggregates")
+p2g_knn <- rowwise_correlations(rna_agg, agg_p2g_knn, "Peak-to-gene links activity scores, KNN aggregates")
+cowplot::plot_grid(archr_knn[[2]], p2g_knn[[2]], ncol = 2)
+
+
+# prepare lists to store correlation vectors and correlation histograms
+corr_list <- list(archr_knn[[1]], p2g_knn[[1]])
+
+# compute the distance-weighted gene activity scores from p2g links using different 
+# distance weight models
+for (model in model_list){
+  weighted_scores <- distanc_weighted_gene_activity_scores(p2g_mat_sub, 
+                                                           geneModel = model, 
+                                                           weight = 50000,
+                                                           peak_mat = peak_mat,
+                                                           links = links, 
+                                                           p2g_original = p2g, 
+                                                           gene_expr = gene_expr)
+  agg_dist <- knn_aggregates(weighted_scores, cell_agg_list)
+  dist_knn <- rowwise_correlations(rna_agg, agg_dist, name = paste0("P2g activity scores, distance weihted, model = ", model))
+  stopifnot(any(is.na(dist_knn)) == FALSE)
+  
+  corr_list <- append(corr_list, dist_knn[[1]])
+  print(dist_knn[[2]])
+  #corr_plots_list <- append(corr_plots_list, dist_knn[[2]])
+  
+  plot <- ggplot() + #geom_density_2d_filled(aes(x = corr_list[[i]], 
+                      #                y = corr_list[[1]]), alpha = .5) +
+  geom_point(aes(x = dist_knn[[1]], y = corr_list[[1]])) +
+  geom_line(aes(x = dist_knn[[1]], y = dist_knn[[1]]), col = "red") +
+  theme(legend.position = "None")  +
+  labs(x = "Correlation gene expression & p2g activity scores",
+        title = paste0(model, "KNN aggregates"),
+        y = "Correlation gene expression & ArchR gene activity scores")
+  print(plot)
+}
+
+```
+
+
+## SEAcells 
+
+```{r, fig.width=8, fig.height=5}
+# prepare lists to store correlation vectors and correlation histograms
+corr_list <- list(seacell_corr_archr[[1]], seacell_corr_p2g[[1]])
+
+# compute the distance-weighted gene activity scores from p2g links using different 
+# distance weight models
+for (model in model_list){
+  weighted_scores <- distanc_weighted_gene_activity_scores(p2g_mat_sub, 
+                                                           geneModel = model, 
+                                                           weight = 50000,
+                                                           peak_mat = peak_mat,
+                                                           links = links, 
+                                                           p2g_original = p2g, 
+                                                           gene_expr = gene_expr)
+  agg_dist <- create_seacell_aggregates(weighted_scores, seacells)
+  dist_knn <- rowwise_correlations(seacell_rna_agg, agg_dist, name = paste0("P2g activity scores, distance weighted, model = ", model))
+  stopifnot(any(is.na(dist_knn)) == FALSE)
+  
+  corr_list <- append(corr_list, dist_knn[[1]])
+  print(dist_knn[[2]])
+  #corr_plots_list <- append(corr_plots_list, dist_knn[[2]])
+  
+  plot <- ggplot() + #geom_density_2d_filled(aes(x = corr_list[[i]], 
+                      #                y = corr_list[[1]]), alpha = .5) +
+  geom_point(aes(x = dist_knn[[1]], y = corr_list[[1]])) +
+  geom_density_2d_filled(aes(x = dist_knn[[1]],
+                             y = corr_list[[1]]), alpha = 0.5) +
+  geom_line(aes(x = corr_list[[1]], y = corr_list[[1]]), col = "red") +
+  theme(legend.position = "None")  +
+  labs(x = "Correlation gene expr. & p2g activity scores",
+        title = paste0(model, "SEACells"),
+        y = "Correlation gene expr. & ArchR gene activity scores")
+  print(plot)
+}
+
+```
+
+
+
+# Gene window, no distance weights
+
+There are two options when defining the gene window. One option is to extend +/- 
+100bp up- and downstream of the TSS. However, since genes have different sizes,
+some gene bodies might be much larger than these gene windows. The second option 
+is to extend the gene window not from the TSS, but from the start and end corrdinate 
+of the gene body respectively. This way, more peaks will be taken into consideration 
+if a gene is larger, simply because the gene window will be larger. Therefore, 
+in ArchR they use an additional weight for the gene body size to account for this
+effect. Here, we extend the gene window around the TSS. As can be seen in 
+the plot below, this does not yield better results, probably, because we are
+removing a lot of correlations which are high and, therefore, important for
+the prediction. 
+
+This is not what would be expected, since some high correlations within
+the gene window are very likely to be biologically important and should
+recapitulate gene expression quite well. This is also shown by the ArchR 
+gene activity scores, which use gene window as well to restric the influence
+of accessible regions to a certain window around the gene's TSS. One reason
+could be that the peak-to-gene links identified by simple correlations are
+not biologically meaningful, therefore also very far away correlations 
+are important for recapitulating gene expression.
+
+## Gene window around TSS
+
+```{r, fig.width=15}
+# As input for this function it is best to use only the most highly variable genes
+compute_gene_window_score <- function(p2g_mat_sub, peak_mat, links, p2g_original, gene_expr){
+  
+  # create gene annotations with start coordinate of each gene
+  # subset to contain only genes which are included in our peak2gene matrix
+  gene_anno <- rowData(gene_expr) %>% 
+    as.data.frame() %>%
+    mutate(idxRNA = seq(nrow(.))) %>% 
+    filter(name %in% rownames(p2g_mat_sub)) %>%
+    mutate(strand = ifelse(strand == 1, "+", "-")) %>%
+    mutate(start_coord = ifelse(strand == "+", start, end)) %>% 
+    rename(gene = name) #%>% GRanges()
+
+  # extend gene regions +/- 100bp up- and downstream of the TSS
+  gene_regions  <- resize(gene_anno %>% GRanges(), width = 1)
+  extendedGeneRegion <- (suppressWarnings(extendGR(gene_regions,
+                                                         upstream = 100000,
+                                                         downstream = 100000)))
+  # subset atac granges & get middle of each peak
+  pos_atac_granges <-  metadata(p2g_original)[[1]]  %>% 
+    as.data.frame() %>%
+    mutate(idxATAC = seq(nrow(.))) %>% 
+    # group_by(seqnames) %>%
+    # mutate(idx = seq_along(seqnames)) %>% 
+    # ungroup %>%
+    #tidyr::unite(chr_idx, seqnames, idx, remove = FALSE, sep = "_") %>% 
+    filter(idxATAC %in% colnames(p2g_mat_sub)) %>% 
+    mutate(middle = start + 300) #%>% GRanges() 
+  
+  #TODO: Filter for genes!
+  stopifnot(length(unique(links$idxATAC)) == dim(pos_atac_granges)[[1]])
+  stopifnot(length(unique(links$idxRNA)) == dim(gene_anno)[[1]])
+  #p2g_filt <- p2g_original %>% as.data.frame() %>% filter(gene %in% rownames(p2g_mat))
+  
+  
+    # find overlapping peaks and gene window in chromosome-aware fashion
+  tmp <- suppressWarnings(findOverlaps(extendedGeneRegion, pos_atac_granges %>% GRanges()))
+  
+  print(paste0("Out of ", subjectLength(tmp), " peaks only ",
+               length(unique(subjectHits(tmp))), " peaks are found within gene window of 200kb."))
+  
+  
+  ### some plots
+  p1 <- (tmp %>% as.data.frame() %>% 
+         group_by(queryHits) %>% # gene region
+         summarize(n = n()) %>% # get number of peaks overlapping with a gene region
+         ggplot() + geom_histogram(aes(x = n), bins = 100, fill="#69b3a2") +
+         labs(title = "number of peaks per gene region of size +/- 100kb from TSS",
+             x = "number of peaks within window"))
+  
+  
+  
+  # combine the three dataframes
+  p2g_join <- left_join(links, as.data.frame(pos_atac_granges),
+                        by = "idxATAC")
+  p2g_join <- left_join(p2g_join, as.data.frame(gene_anno),
+                        by = "idxRNA", suffix = c(".atac", ".rna"))
+
+  # compute distance and distance weights 
+  p2g_join <- p2g_join %>% 
+    mutate(distance = abs(start_coord - middle))# %>%
+   # mutate(distance_weight = eval(parse(text=geneModel)))
+  
+  
+  p2 <- p2g_join %>% ggplot() +
+    geom_histogram(aes(x = distance), bins = 100) +
+    labs(title = "Distance", x = "distance") +
+    geom_vline(xintercept  = 100000, color = "red") 
+
+  
+  # p2 <- p2g_join %>% ggplot() +
+  #   geom_histogram(aes(x = (distance_weight)), bins = 100) +
+  #   scale_y_log10() +
+  #   labs(title = "Distance Weights", x = "distance weights") 
+
+  print(cowplot::plot_grid(p1, p2, ncol = 2))#),  ncol = 2))
+  
+  
+  
+  
+    
+  # create a dataframe of all peaks which overlap their corresponding gene window
+  peaks_in_gene_window <- data.frame(gene = gene_regions[queryHits(tmp)]$gene, 
+             peak = (pos_atac_granges %>% GRanges())[subjectHits(tmp)]$idxATAC) %>% 
+    unite(peak_gene_window, gene, peak, sep = "#", remove = FALSE)
+  
+  # filter the p2g link dataframe for only peaks which are within a gene window
+  corr_window <- p2g_join %>%
+    unite(peak_gene_window, gene, idxATAC, sep = "#", remove = FALSE) %>%
+    filter(peak_gene_window %in% peaks_in_gene_window$peak_gene_window) 
+
+
+  ### PLOTS
+  
+  p1 <- corr_window %>% 
+    ggplot() +
+    geom_histogram(aes(x = Correlation), bins = 200, fill = "#69b3a2") +
+    labs(title = "Correlation values of peaks found within gene windows")
+  
+  p2 <- corr_window %>% 
+    ggplot() +
+    geom_histogram(aes(x = distance), bins = 200, fill = "#69b3a2") +
+    labs(title = "Distance between peaks and genes found within gene windows and TSS")
+  
+  p3 <- corr_window %>% 
+    mutate(bin = cut_width(distance, width=10000, boundary=0)) %>% 
+    ggplot() +
+    geom_boxplot(aes(x = bin, y = Correlation), fill = "#69b3a2") +
+    labs(title = "Distance and Correlation within gene window, 1000bp bins",
+         x = "Distance (1000bp bins)") +
+  scale_x_discrete(guide = guide_axis(angle = 90)) 
+
+  print(cowplot::plot_grid(p1, p2, p3, ncol = 1))
+  
+  
+  p1 <- ggplot() + 
+    geom_histogram(aes(x = rowSums(p2g_mat_sub > 0)), bins = 200, fill = "#69b3a2") +
+    scale_y_log10() +
+    labs(title = "# peaks correlated with each gene", 
+         x = "number of peaks", y = "log10(count)") 
+    
+  
+  p2 <- ggplot() + 
+    geom_histogram(aes(x = colSums(p2g_mat_sub > 0)), bins = 70, fill = "#69b3a2") +
+    scale_y_log10() +
+    labs(title = "# genes correlated with each peak",
+         y = "log10(count)", x = "number of genes")
+  
+  p3 <- ggplot() + 
+    geom_histogram(aes(x = rowSums(p2g_mat_sub > 0)), bins = 200, fill = "#69b3a2") +
+    labs(title = "# peaks correlated with each gene", 
+         x = "number of peaks", y = "count") 
+    
+  
+  p4 <- ggplot() + 
+    geom_histogram(aes(x = colSums(p2g_mat_sub > 0)), bins = 70, fill = "#69b3a2") +
+    labs(title = "# genes correlated with each peak",
+         y = "count", x = "number of genes")
+  
+  print(cowplot::plot_grid(p1, p2, p3, p4, ncol = 2))
+
+  
+
+  
+  # 
+  # 
+  # peak_middle_region <- pos_atac_granges %>% GRanges()
+  # # add the half width to the start of each peak
+  # start(peak_middle_region) = start(peak_middle_region) + 
+  #   floor(width(peak_middle_region) / 2)
+  # # resize the ranges so we only have the middle of each peak
+  # peak_middle_region <- resize(peak_middle_region, 1, "start")
+  # 
+  # # compute the distances between peak middle and gene TSS of all peaks which 
+  # # overlap with a gene window
+  # distance <- distance(ranges(gene_regions)[queryHits(tmp)], 
+  #               ranges(resize(peak_middle_region, width = 1))[subjectHits(tmp)])
+  # 
+  # 
+  # ### PLOT
+  # # p1 <- ggplot() + geom_histogram(aes(x = distance), bins = 200) +
+  # #   scale_y_log10() +
+  # #   labs(title = "Distance between peak middle and gene TSS within a gene window",
+  # #        y = "log10(count)") +
+  # #   geom_vline(xintercept = 100000, color = "red")
+  # 
+  # 
+  # 
+  # isMinus <- BiocGenerics::which(strand(gene_regions) == "-")
+  # # subtract the gene start coordinate from the tile start coordinate -> relative distances
+  # signDist <- sign(start(peak_middle_region)[subjectHits(tmp)] - 
+  #                    start(resize(gene_regions,1,"start"))[queryHits(tmp)])
+  # # convert the direction of distance for all distances corresponding to the negative strand
+  # signDist[isMinus] <- signDist[isMinus] * -1
+  # 
+  # 
+  # distance <- distance * signDist
+  # 
+  # 
+  # 
+  # #### PLOT
+  # p2 <- ggplot() + geom_histogram(aes(x = distance), bins = 500) + 
+  #   scale_y_log10() +
+  #   labs(title = "Relative distance of peaks to TSS within a gene window",
+  #        x = "Relative distance to TSS", y = "log10(count)") + 
+  #   geom_vline(xintercept = c(100000, -100000), color = "red")
+  # 
+  # print(p2)
+  # #cowplot::plot_grid(p1, p2, ncol = 1)
+
+  p2g_links_gene_window <- Matrix::sparseMatrix(
+      i = corr_window$idxRNA, 
+      j = corr_window$idxATAC, 
+      x = corr_window$Correlation, 
+      dims = c(nrow(expr_mat), nrow(peak_mat)),
+      dimnames = list(rownames(expr_mat),rownames(peak_mat))
+    )
+  
+  print(paste0("The peak-to-gene links matrix, restricted to a +/- 100kb window around the TSS has dimensions ", split(dim(p2g_links_gene_window), 1)))
+  
+  print(paste0("The maximum value is: ", max(p2g_links_gene_window), ", the minum value is: ", min(p2g_links_gene_window) ))
+  
+  
+  
+  p2g_links_gene_window <- p2g_links_gene_window[rowSums(p2g_links_gene_window) != 0, ]
+  p2g_links_gene_window <- p2g_links_gene_window[, colSums(p2g_links_gene_window) != 0]
+  
+  print(paste0("After removing any rows and columsn which do not contain any links we are left with ", nrow(p2g_links_gene_window), " genes and ", ncol(p2g_links_gene_window), " peaks."))
+  # Compute gene activity scores
+  gene_window_scores <- gene_activity_scores(peak_mat_sub[colnames(p2g_links_gene_window), ], p2g_links_gene_window)
+  dim(gene_window_scores)
+
+  
+  return(gene_window_scores) 
+}
+```
+
+
+```{r, fig.height=8, fig.width=10}
+gene_window_scores <- compute_gene_window_score(
+  p2g_mat_sub = p2g_mat_sub, 
+  peak_mat = peak_mat, 
+  links = links, 
+  p2g_original = p2g, 
+  gene_expr = gene_expr)
+```
+
+### KNN aggregates
+
+First, I compared the distance weigthed gene activity scores based on the ArchR KNN aggregates. 
+
+
+```{r, fig.width=8, fig.height=5}
+weighted_scores_agg <- knn_aggregates(gene_window_scores, cell_agg_list)
+weighted_knn_corr <- rowwise_correlations(rna_agg, weighted_scores_agg,
+                                          "P2g links within gene window")
+weighted_knn_corr[[2]]
+
+ggplot() +
+  geom_density_2d_filled(aes(x = weighted_knn_corr[[1]], 
+                             y = archr_knn[[1]][names(weighted_knn_corr[[1]])]),
+                         alpha = .5) +
+  geom_point(aes(x = weighted_knn_corr[[1]], y = archr_knn[[1]][names(weighted_knn_corr[[1]])])) +
+  geom_line(aes(x = weighted_knn_corr[[1]], y = weighted_knn_corr[[1]]), col = "red") +
+  theme(legend.position = "None")  +
+  labs(x = "Correlation between gene expression and p2g activity scores",
+        title = "Peak-to-gene links are restricted to a gene window of +/- 100kb around TSS",
+        y = "Correlation between gene expression and ArchR gene activity scores")
+
+
+
+```
+
+
+### SEACells
+
+Second, I compared the distance weigths using the SEACell aggregates, which
+yields better results as can be seen above. 
+
+```{r, fig.width=8, fig.height=5}
+gene_window_agg <- create_seacell_aggregates(gene_window_scores, seacells)
+gene_window_corr <- rowwise_correlations(seacell_rna_agg, gene_window_agg,
+                                         name = "Gene window around TSS")
+
+gene_window_corr[[2]]
+
+
+ggplot() +
+  geom_point(aes(x = gene_window_corr[[1]],
+                 y = seacell_corr_archr[[1]][names(gene_window_corr[[1]])])) +
+  geom_density_2d_filled(aes(
+    y = seacell_corr_archr[[1]][names(gene_window_corr[[1]])],
+    x = gene_window_corr[[1]]), alpha = 0.5) +
+  geom_line(aes(x = seacell_corr_archr[[1]][names(gene_window_corr[[1]])], 
+                y = seacell_corr_archr[[1]][names(gene_window_corr[[1]])]), 
+            color = "red") +
+  theme(legend.position = "None")  +
+  labs(x = "Correlation between gene expression and p2g activity scores, gene window",
+        y = "Correlation between gene expression and ArchR gene activity scores",
+       title = "Peak-to-gene links within gene window")
+
+```
+
+# Effect of using different distance decay rates 
+
+How does the distance weight distribution change with different decay rates?
+
+Here, we use the formula $e^{\frac{-abs(distance)}{c}}$ with differen decay rates
+$c \in \{5000, 50000, 500000, 5000000\}$. Additionally, we use only peaks which 
+overlap with a +/- 100kb window from the TSS.
+
+```{r, fig.width=10,fig.height=5}
+model_list <- c("exp(-abs(distance)/5000)", "exp(-abs(distance)/50000)",
+                "exp(-abs(distance)/500000)", "exp(-abs(distance)/5000000)")
+
+
+atac_granges <- metadata(p2g)[[1]]
+#rna_granges <- metadata(p2g_original)[[2]]
+gene_anno <- rowData(gene_expr)
+
+# create gene annotations with start coordinate of each gene
+# subset to contain only genes which are included in our peak2gene matrix
+gene_anno <- gene_anno %>% as.data.frame() %>%
+  mutate(idxRNA = seq(nrow(.))) %>% 
+  filter(name %in% rownames(p2g_mat_sub)) %>%
+  mutate(strand = ifelse(strand == 1, "+", "-")) %>%
+  mutate(start_coord = ifelse(strand == "+", start, end)) %>% 
+  rename(gene = name) #%>% GRanges()
+
+# subset atac granges & get middle of each peak
+pos_atac_granges <- atac_granges  %>% 
+  as.data.frame() %>%
+  mutate(idxATAC = seq(nrow(.))) %>% 
+  # group_by(seqnames) %>%
+  # mutate(idx = seq_along(seqnames)) %>% 
+  # ungroup %>%
+  #tidyr::unite(chr_idx, seqnames, idx, remove = FALSE, sep = "_") %>% 
+  filter(idxATAC %in% colnames(p2g_mat_sub)) %>% 
+  mutate(middle = start + 300) #%>% GRanges() 
+
+
+
+# combine the three dataframes
+p2g_join <- left_join(links, as.data.frame(pos_atac_granges),
+                      by = "idxATAC")
+p2g_join <- left_join(p2g_join, as.data.frame(gene_anno),
+                      by = "idxRNA", suffix = c(".atac", ".rna"))
+
+# compute distance and distance weights 
+p2g_join <- p2g_join %>% 
+  mutate(distance = abs(start_coord - middle)) %>%
+  mutate(rel_distance = start_coord - middle)
+ # mutate(distance_weight = eval(parse(text=geneModel)))
+
+for (model in model_list){ 
+# compute distance and distance weights 
+  p2g_join <- p2g_join %>% 
+    mutate(distance = abs(start_coord - middle)) %>%
+    mutate(distance_weight = eval(parse(text=model)))
+  
+  p1 <- p2g_join %>% ggplot() +
+    geom_histogram(aes(x = distance), bins = 200, fill="#69b3a2") +
+    labs(title = "Distance between peaks and genes", x = "distance") +
+    geom_vline(xintercept  = 5000, color = "red") +
+    geom_vline(xintercept  = 250000, color = "orange")
+  
+  p2 <- p2g_join %>% ggplot() +
+    geom_histogram(aes(x = (distance_weight)), bins = 200, fill="#69b3a2") +
+    scale_y_log10() +
+    labs(title = paste0("Distance_decay: ", model),
+         x = "distance weights", y = "log10(counts)")
+  
+  print(cowplot::plot_grid(p1, p2, ncol = 2))
+
+}
+  # Relationship between distance and correlation value
+# p3 <- p2g_join %>% ggplot() +
+#   geom_point(aes(x = Correlation, y = distance)) +
+#   labs(title = "Distance vs. correlation between peaks and genes",
+#        x = "Correlation between peak and gene", 
+#        y = "Distance between peak and gene")
+# 
+# 
+# p4 <- p2g_join %>% ggplot() +
+#   geom_point(aes(x = Correlation, y = distance_weight)) +
+#   labs(title = "Distance vs. correlation between peaks and genes",
+#        x = "Correlation between peak and gene", 
+#        y = "Distance weights between peak and gene")
+
+
+#cowplot::plot_grid(p1, p2, ncol = 1)
+
+```
+
+
+### Relationship between distance and correlation values
+
+```#{r,fig.width=15}
+
+# Olot relationship between distance and correlation as density plots
+p1 <- p2g_join %>% ggplot() + 
+  geom_density_2d_filled(aes(x = Correlation, y = distance)) +
+  theme(legend.position = "None") +
+  labs(title = "Relationship between distance and correlation")
+
+p2 <- p2g_join %>%
+  filter(Correlation > 0.3) %>% 
+  ggplot() + 
+  geom_density_2d_filled(aes(x = Correlation, y = distance)) +
+  theme(legend.position = "None") +
+  labs(title = "Relationship between distance and correlation")
+
+p3 <- p2g_join %>%
+  filter(Correlation > 0.6) %>% 
+  ggplot() + 
+  geom_density_2d_filled(aes(x = Correlation, y = distance)) +
+  theme(legend.position = "None") +
+  labs(title = "Relationship between distance and correlation")
+
+cowplot::plot_grid(p1, p2, p3, ncol = 2)
+```
+
+
+```#{r}
+p2g %>%  
+  mutate(bin=cut_width(distance, width=100000, boundary=0)) %>%
+  filter(distance < 10000000) %>% 
+  ggplot() +
+  geom_boxplot(aes(x = bin, y = Correlation), fill="#69b3a2") +
+  #geom_vline(xintercept  = 250000, color = "red") +
+  labs(title = "Relationship between distance and correlation of p2g links, 100kb bins",
+       x = "Distance between peaks and genes within 250kb", y = "Correlation") + 
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+```
+
+
+```{r, fig.width=10}
+p2g_join %>%  
+  mutate(bin=cut_width(distance, width=100000, boundary=0)) %>%
+  filter(distance < 10000000) %>% 
+  ggplot() +
+  geom_boxplot(aes(x = bin, y = Correlation), fill="#69b3a2") +
+  #geom_vline(xintercept  = 250000, color = "red") +
+  labs(title = "Relationship between distance and correlation of p2g links, 100kb bins",
+       x = "Distance between peaks and genes within 250kb", y = "Correlation") + 
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+```
+
+```{r, fig.width=22, fig.height=15}
+
+p1 <- p2g_join %>%  
+  mutate(bin=cut_width(distance, width=100000, boundary=0)) %>%
+  filter(distance < 10000000 & Correlation > 0.5) %>% 
+  ggplot() +
+  geom_boxplot(aes(x = bin, y = Correlation), fill="#69b3a2") +
+  labs(title = "Relationship between distance and correlation of p2g links, 100kb bins",
+       x = "Distance < 1e^7 bp", y = "Correlation > 0.5") + 
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+p2 <- p2g_join %>%  
+  mutate(bin=cut_width(distance, width=100000, boundary=0)) %>%
+  filter(distance < 10000000 & Correlation > 0.8) %>% 
+  ggplot() +
+  geom_boxplot(aes(x = bin, y = Correlation), fill="#69b3a2") +
+  labs(title = "Relationship between distance and correlation of p2g links, 100kb bins",
+       x = "Distance < 1e^7 bp", y = "Correlation > 0.8") + 
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+p3 <- p2g_join %>%  
+  mutate(bin=cut_width(distance, width=100000, boundary=0)) %>%
+  filter(distance < 10000000 & Correlation < 0.5) %>% 
+  ggplot() +
+  geom_boxplot(aes(x = bin, y = Correlation), fill="#69b3a2") +
+  labs(title = "Relationship between distance and correlation of p2g links, 100kb bins",
+       x = "Distance < 1e^7 bp", y = "Correlation < 0.5") + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+
+
+p4 <- p2g_join %>%  
+  mutate(bin=cut_width(distance, width=1000, boundary=0)) %>%
+  filter(distance < 100000 & Correlation > 0.5) %>% 
+  ggplot() +
+  geom_boxplot(aes(x = bin, y = Correlation), fill="#69b3a2") +
+  labs(title = "Relationship between distance and correlation of p2g links, 1kb bins",
+       x = "Distance < 100kb", y = "Correlation > 0.5") + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+
+cowplot::plot_grid(p1, p2, p3, p4, ncol = 2)
+```
+
+Lets have a look at correlation values between peaks within the promoter region
+of a TSS, namely 5kb upstream of the TSS.
+
+```{r, fig.width=8}
+p2g_join %>%  
+  mutate(bin=cut_width(rel_distance, width=100, boundary=0)) %>%
+  filter(rel_distance < 0 & rel_distance >= -5000) %>% 
+  ggplot() +
+  geom_boxplot(aes(x = bin, y = Correlation), fill="#69b3a2") +
+  #geom_vline(xintercept  = 250000, color = "red") +
+  labs(title = "Distance -5kb upstream of TSS, 100bp bins",
+       x = "Distance -5kb upstream of TSS", y = "Correlation") + 
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+```
+
+
+### Try distance decay rates
+
+
+```{r}
+rna_knn <- readRDS("11_added_Ricards_peaks_p2g_entire_chromosome/Peak2GeneLinks/seRNA-Group-KNN.rds")
+#rna_agg_mat <- assays(rna_knn)[[1]]
+#rownames(rna_agg_mat) <- rowData(rna_knn)$name
+
+cell_agg_list <- metadata(rna_knn)[[1]]
+
+
+knn_aggregates <- function(matrix, cell_agg_list){
+  # empty matrix to store aggregates
+  agg <- matrix(data = 0,
+                nrow = dim(matrix)[1],
+                ncol = length(cell_agg_list),
+                dimnames = list(rownames(matrix), NULL))
+  
+  for (i in seq.int(length(cell_agg_list))) {
+    agg[, i] <- rowSums(matrix[, cell_agg_list[[i]]])
+  }
+  return(agg)
+}
+
+
+rna_agg <- knn_aggregates(expr_mat_sub, cell_agg_list)
+archr_knn <- archr_scores_mat[as.vector(rownames(agg_p2g_knn)),]
+agg_archr_knn <- knn_aggregates(archr_knn, cell_agg_list)
+
+agg_p2g_knn <- knn_aggregates(p2g_scores, cell_agg_list)
+agg_dist <- knn_aggregates(weighted_scores, cell_agg_list)
+```
+
+
+```{r, fig.width=10}
+archr_knn <- rowwise_correlations(rna_agg, agg_archr_knn, "Archr gene activity scores")
+p2g_knn <- rowwise_correlations(rna_agg, agg_p2g_knn, "Peak-to-gene links activity scores")
+dist_knn <- rowwise_correlations(rna_agg, agg_dist, "Peak-to_gene links activity scores weighted by distance")
+cowplot::plot_grid(archr_knn[[2]], p2g_knn[[2]], dist_knn[[2]], ncol = 2)
+
+p1 <- ggplot() + geom_density_2d_filled(aes(x = p2g_knn[[1]], 
+                                      y = archr_knn[[1]]), alpha = .5) +
+  geom_point(aes(x = p2g_knn[[1]], y = archr_knn[[1]])) +
+  geom_line(aes(x = p2g_knn[[1]], y = p2g_knn[[1]]), col = "red") +
+  theme(legend.position = "None") 
+  
+  
+p2 <- ggplot() + geom_density_2d_filled(aes(x = dist_knn[[1]], 
+                                      y = archr_knn[[1]]), alpha = .5) +
+  geom_point(aes(x = dist_knn[[1]], y = archr_knn[[1]])) +
+  geom_line(aes(x = dist_knn[[1]], y = dist_knn[[1]]), col = "red") +
+  theme(legend.position = "None") 
+
+cowplot::plot_grid(p1, p2, ncol = 2)
+```
+
+
+
+# TAD boundaries
+
+In case Hi-C data are available, TAD boundaries could aid in finding 
+peak-to-gene links. Setting a distance decay rate to the same value
+for all genes and celltypes, does not give credit to the biological variability associated with gene regulation. In [@Zuin2022] it has been
+shown experimentally, that interactions between regulatory elements 
+decay exponentially within TAD boundaries and almost disappear completely beyond TAD boundaries. Here, I restricted the peak-to-gene links identified by ArchR to within TAD boundaries and computed gene activity scores again.
+
+```{r}
+tad_boundaries <- as.data.frame(read.table("jupyter_notebooks/tad_e75.bed", header = FALSE, sep = "\t", stringsAsFactors = FALSE, quote = ""))
+tad_boundaries <- tad_boundaries %>% 
+  rename(seqnames = V1, start = V2, end = V3) %>% 
+  GRanges()
+
+p1 <- ggplot() + geom_histogram(aes(x = width(gene_anno %>% GRanges())), 
+                                    bins = 200) +
+  geom_vline(xintercept = median(width(gene_anno %>% GRanges())), 
+             color = "orange") +
+  labs(title = paste0("Distribution of gene size, median size = ",
+                      median(width(gene_anno %>% GRanges()))),
+       x = "Gene size in bp")
+
+p2 <- ggplot() + geom_histogram(aes(x = width(tad_boundaries)), bins = 200) +
+  geom_vline(xintercept = median(width(tad_boundaries)), color = "orange") +
+  labs(title = paste0("Distribution of TAD boundary size, median size = ",
+       median(width(tad_boundaries))),
+      x = "TAD boundary size in bp")
+
+cowplot::plot_grid(p1, p2, ncol = 1)
+```
+
+What is the distribution of peaks and genes within TAD boundaries?
+
+```{r, fig.width=12, fig.height=5}
+gene_anno <- rowData(gene_expr)
+
+# create gene annotations with start coordinate of each gene
+# subset to contain only genes which are included in our peak2gene matrix
+gene_anno <- gene_anno %>% as.data.frame() %>%
+  mutate(idxRNA = seq(nrow(.))) %>% 
+  filter(name %in% rownames(p2g_mat_sub)) %>%
+  mutate(strand = ifelse(strand == 1, "+", "-")) %>%
+  mutate(start_coord = ifelse(strand == "+", start, end)) %>% 
+  rename(gene = name) #%>% GRanges()
+
+
+# subset atac granges & get middle of each peak
+pos_atac_granges <- atac_granges  %>% 
+  as.data.frame() %>%
+  mutate(idxATAC = seq(nrow(.))) %>% 
+  # group_by(seqnames) %>%
+  # mutate(idx = seq_along(seqnames)) %>% 
+  # ungroup %>%
+  #tidyr::unite(chr_idx, seqnames, idx, remove = FALSE, sep = "_") %>% 
+  filter(idxATAC %in% colnames(p2g_mat_sub)) %>% 
+  mutate(middle = start + 300) #%>% GRanges() 
+
+#TODO: Filter for genes!
+stopifnot(length(unique(links$idxATAC)) == dim(pos_atac_granges)[[1]])
+stopifnot(length(unique(links$idxRNA)) == dim(gene_anno)[[1]])
+#p2g_filt <- p2g_original %>% as.data.frame() %>% filter(gene %in% rownames(p2g_mat))
+
+
+  # find overlapping peaks and gene window in chromosome-aware fashion
+tad_overlaps_genes <- suppressWarnings(findOverlaps(gene_anno %>% GRanges(), 
+                                              tad_boundaries))
+
+p1 <- tad_overlaps_genes %>% as.data.frame() %>%
+  group_by(subjectHits) %>%
+  summarise(n = n()) %>% 
+  ggplot() + geom_histogram(aes(x = n), bins = 100) +
+  labs(title = "Number of highly variable genes within a tad boundary",
+       x = "number of genes/tad boundary")
+
+tad_overlaps_peaks <- suppressWarnings(findOverlaps(pos_atac_granges %>% GRanges(),
+                                         tad_boundaries))
+
+
+p2 <- tad_overlaps_peaks %>% as.data.frame() %>%
+  group_by(subjectHits) %>%
+  summarise(n = n()) %>% 
+  ggplot() + geom_histogram(aes(x = n), bins = 100) +
+  labs(title = "Number of peaks within a tad boundary",
+       x = "number of peaks/tad boundary")
+
+
+cowplot::plot_grid(p1, p2, ncol = 2)
+```
+
+How many p2g links are within tad boundaries?
+
+Peak-to-gene links considered in above computations
+
+All peak-to-gene links
+
+```#{r, fig.width=12, fig.height=5}
+rm(peaks)
+gc(reset = TRUE)
+
+p2g_pos <- p2g %>% as.data.frame() %>% filter(Correlation > 0) %>%
+  unite(link, idxRNA, idxATAC, sep = "%", remove = FALSE)
+
+gene_anno_all <- rowData(gene_expr) %>% as.data.frame() %>%
+  mutate(idxRNA = seq(nrow(.))) %>% 
+  filter(idxRNA %in% p2g_pos$idxRNA) %>%
+  mutate(strand = ifelse(strand == 1, "+", "-")) %>%
+  mutate(start_coord = ifelse(strand == "+", start, end)) %>% 
+  rename(gene = name) #%>% GRanges()
+
+# subset atac granges & get middle of each peak
+pos_atac_granges_all <- metadata(p2g)[[1]]  %>% 
+  as.data.frame() %>%
+  mutate(idxATAC = seq(nrow(.))) %>% 
+  # group_by(seqnames) %>%
+  # mutate(idx = seq_along(seqnames)) %>% 
+  # ungroup %>%
+  #tidyr::unite(chr_idx, seqnames, idx, remove = FALSE, sep = "_") %>% 
+  filter(idxATAC %in% p2g_pos$idxATAC) %>% 
+  mutate(middle = start + 300) #%>% GRanges() 
+
+
+
+# combine the three dataframes
+p2g_join_all <- left_join(p2g_pos, as.data.frame(pos_atac_granges_all),
+                      by = "idxATAC")
+p2g_join_all <- left_join(p2g_join_all, as.data.frame(gene_anno_all),
+                      by = "idxRNA", suffix = c(".atac", ".rna"))
+
+
+p2g_join_all <- p2g_join_all %>% 
+  mutate(distance = abs(start_coord - middle))
+
+
+
+  # find overlapping peaks and gene window in chromosome-aware fashion
+tad_overlaps_genes <- suppressWarnings(findOverlaps(gene_anno_all %>% GRanges(), 
+                                              tad_boundaries))
+
+# get genes which are not found within two TAD boundaries, but only within one
+within_genes <- (tad_overlaps_genes %>% 
+as.data.frame() %>% 
+group_by(queryHits) %>%
+summarise(n = n()) %>% ungroup() %>%
+filter(n < 2))$queryHits
+
+print(paste0("Out of ", nrow(gene_anno_all), " genes, ", length(unique(queryHits(tad_overlaps_genes))), " genes are within TAD boundaries. Some of these genes even span across TAD boudnaries, namely ", abs(length(within_genes) - length(unique(queryHits(tad_overlaps_genes)))), "."))
+
+# We only keep genes within boundaries, but not genes crossing boundaries
+tad_overlaps_genes <- tad_overlaps_genes %>% as.data.frame %>% 
+  filter(queryHits %in% within_genes) #%>% S4Vectors::as()
+
+# get peaks overlapping with tad boundaries
+tad_overlaps_peaks <- suppressWarnings(findOverlaps(pos_atac_granges_all %>% GRanges(),
+                                       tad_boundaries))
+
+# filter for peaks overlapping tad boundaries which also contain genes
+tad_overlaps_peaks <- tad_overlaps_peaks %>% as.data.frame() %>% 
+  filter(subjectHits %in% tad_overlaps_genes$subjectHits)
+
+# combine tad boundaries which contain genes and peaks
+tad_combine <- left_join(tad_overlaps_genes, tad_overlaps_peaks, 
+                         copy = TRUE, by = "subjectHits", suffix = c(".gene", ".peak")) %>%
+  unite(link, queryHits.gene, queryHits.peak, sep = "%", remove = FALSE)
+
+
+genes <- gene_anno_all[tad_combine$queryHits.gene, ] %>%
+  mutate(tad_index = tad_combine$subjectHits)
+
+peak_coll <- pos_atac_granges_all[tad_combine$queryHits.peak, ] %>% 
+  mutate(tad_index = tad_combine$subjectHits)
+
+gene_peak_tad_df <- left_join(genes, peak_coll, by = "tad_index", suffic = c(".gene", ".peak")) %>%  unite(peak_gene_tad, gene, idxATAC, sep = "#", remove = FALSE)
+
+### some plots
+p1 <- (tad_overlaps_peaks  %>% as.data.frame() %>% 
+       group_by(subjectHits) %>% # gene region
+       summarize(n = n()) %>% # get number of peaks overlapping with a gene region
+       ggplot() + geom_histogram(aes(x = n), bins = 100, fill="#69b3a2") +
+       labs(title = "Number of peaks per tad boundary, positive p2g links",
+           x = "number of peaks"))
+
+p2 <- (tad_overlaps_genes  %>% as.data.frame() %>% 
+     group_by(subjectHits) %>% # gene region
+     summarize(n = n()) %>% # get number of peaks overlapping with a gene region
+     ggplot() + geom_histogram(aes(x = n), bins = 100, fill="#69b3a2") +
+     labs(title = "Number of genes per tad boundary, positive p2g links",
+         x = "number of genes"))
+
+print(cowplot::plot_grid(p1, p2, ncol = 2))
+
+
+
+print(paste0("The number of positive peak-to-gene links is: ", length(p2g_pos$link)))
+print(paste0( "The number of positive peak-to-gene links within TAD boundaries is: ", length(tad_combine$link)))
+
+print(paste0("The number of positive peak-to-gene links outside TAD boundaries is: ", length(p2g_pos$link) - length(tad_combine$link)))
+
+
+print(paste0("The proportion of peak-to-gene links within TAD boundaries out of all 
+             positive peak-to-gene links across the entire chromosome is ",
+             round(length(tad_combine$link) / length(p2g_pos$link), 5)))
+
+
+
+#ggplot() + geom_point(aes(x = p2g_pos$idxATAC, y = p2g_pos$idxRNA))
+
+
+```
+
+## Distance vs. Correlation
+
+Here I visualize the relationship between distance between peaks and genes
+and their respective correlation values using all positive links obtained 
+using ArchR 
+
+```#{r}
+p2g_join_all %>%  
+  mutate(bin=cut_width(distance, width=100000, boundary=0)) %>%
+  filter(distance < 10000000) %>% 
+  ggplot() +
+  geom_boxplot(aes(x = bin, y = Correlation), fill="#69b3a2") +
+  #geom_vline(xintercept  = 250000, color = "red") +
+  labs(title = "Relationship between distance and correlation of p2g links, 100kb bins",
+       x = "Distance between peaks and genes within 250kb", y = "Correlation") + 
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+```
+
+
+```{r, fig.width=8}
+
+colPalette_celltypes = c('#532C8A',
+ '#c19f70',
+ '#f9decf',
+ '#c9a997',
+ '#B51D8D',
+ '#3F84AA',
+ '#9e6762',
+ '#354E23',
+ '#F397C0',
+ '#ff891c',
+ '#635547',
+ '#C72228',
+ '#f79083',
+ '#EF4E22',
+ '#989898',
+ '#7F6874',
+ '#8870ad',
+ '#647a4f',
+ '#EF5A9D',
+ '#FBBE92',
+ '#139992',
+ '#cc7818',
+ '#DFCDE4',
+ '#8EC792',
+ '#C594BF',
+ '#C3C388',
+ '#0F4A9C',
+ '#FACB12',
+ '#8DB5CE',
+ '#1A1A1A',
+ '#C9EBFB',
+ '#DABE99',
+ '#65A83E',
+ '#005579',
+ '#CDE088',
+ '#f7f79e',
+ '#F6BFCB')
+
+tad_boundaries %>% as.data.frame() %>% group_by(seqnames) %>% 
+  summarise(n = n()) %>% ungroup() %>%  
+  ggplot() + geom_col(aes(x = seqnames, y = n, fill = seqnames), alpha = .7, ) +#, position = "dodge")
+  theme(legend.position = "None") +
+  scale_fill_manual(values = colPalette_celltypes) +
+  labs(y = "number of tad boundaries")
+
+```
+
+
+TODO: Should I also remove peaks which are across TAD boundaries?
+
+```{r, fig.width=15, fig.height=10}
+# As input for this function it is best to use only the most highly variable genes
+tad_boundaries_p2g_scores <- function(p2g_mat_sub, peak_mat, links, p2g_original, gene_expr, tad_boundaries){
+  atac_granges <- metadata(p2g_original)[[1]]
+  #rna_granges <- metadata(p2g_original)[[2]]
+  gene_anno <- rowData(gene_expr)
+  
+  # create gene annotations with start coordinate of each gene
+  # subset to contain only genes which are included in our peak2gene matrix
+  gene_anno <- gene_anno %>% as.data.frame() %>%
+    mutate(idxRNA = seq(nrow(.))) %>% 
+    filter(name %in% rownames(p2g_mat_sub)) %>%
+    mutate(strand = ifelse(strand == 1, "+", "-")) %>%
+    mutate(start_coord = ifelse(strand == "+", start, end)) %>% 
+    rename(gene = name) #%>% GRanges()
+
+
+  # subset atac granges & get middle of each peak
+  pos_atac_granges <- atac_granges  %>% 
+    as.data.frame() %>%
+    mutate(idxATAC = seq(nrow(.))) %>% 
+    # group_by(seqnames) %>%
+    # mutate(idx = seq_along(seqnames)) %>% 
+    # ungroup %>%
+    #tidyr::unite(chr_idx, seqnames, idx, remove = FALSE, sep = "_") %>% 
+    filter(idxATAC %in% colnames(p2g_mat_sub)) %>% 
+    mutate(middle = start + 300) #%>% GRanges() 
+  
+  #TODO: Filter for genes!
+  stopifnot(length(unique(links$idxATAC)) == dim(pos_atac_granges)[[1]])
+  stopifnot(length(unique(links$idxRNA)) == dim(gene_anno)[[1]])
+  #p2g_filt <- p2g_original %>% as.data.frame() %>% filter(gene %in% rownames(p2g_mat))
+  
+  
+    # find overlapping peaks and gene window in chromosome-aware fashion
+  tad_overlaps_genes <- suppressWarnings(findOverlaps(gene_anno %>% GRanges(), 
+                                                tad_boundaries))
+  
+  # get genes which are not found within two TAD boundaries, but only within one
+  within_genes <- (tad_overlaps_genes %>% 
+  as.data.frame() %>% 
+  group_by(queryHits) %>%
+  summarise(n = n()) %>% ungroup() %>%
+  filter(n < 2))$queryHits
+
+  print(paste0("Out of ", nrow(gene_anno), " genes, ", length(unique(queryHits(tad_overlaps_genes))), " genes are within TAD boundaries. Some of these genes even span across TAD boudnaries, namely ", length(within_genes), "."))
+  
+  # We only keep genes within boundaries, but not genes crossing boundaries
+  tad_overlaps_genes <- tad_overlaps_genes %>% as.data.frame %>% 
+    filter(queryHits %in% within_genes) #%>% S4Vectors::as()
+  
+  # get peaks overlapping with tad boundaries
+  tad_overlaps_peaks <- suppressWarnings(findOverlaps(pos_atac_granges %>% GRanges(),
+                                         tad_boundaries))
+  
+  # filter for peaks overlapping tad boundaries which also contain genes
+  tad_overlaps_peaks <- tad_overlaps_peaks %>% as.data.frame() %>% 
+    filter(subjectHits %in% tad_overlaps_genes$subjectHits)
+  
+  # combine tad boundaries which contain genes and peaks
+  tad_combine <- left_join(tad_overlaps_genes, tad_overlaps_peaks, 
+                           copy = TRUE, by = "subjectHits", suffix = c(".gene", ".peak"))
+  
+  
+  genes <- gene_anno[tad_combine$queryHits.gene, ] %>%
+    mutate(tad_index = tad_combine$subjectHits)
+  
+  peak_coll <- pos_atac_granges[tad_combine$queryHits.peak, ] %>% 
+    mutate(tad_index = tad_combine$subjectHits)
+  
+  gene_peak_tad_df <- left_join(genes, peak_coll, by = "tad_index", suffic = c(".gene", ".peak")) %>%  unite(peak_gene_tad, gene, idxATAC, sep = "#", remove = FALSE)
+
+
+  
+  ### some plots
+  p1 <- (tad_overlaps_peaks  %>% as.data.frame() %>% 
+         group_by(subjectHits) %>% # gene region
+         summarize(n = n()) %>% # get number of peaks overlapping with a gene region
+         ggplot() + geom_histogram(aes(x = n), bins = 100, fill="#69b3a2") +
+         labs(title = "Number of peaks per tad boundary",
+             x = "number of peaks"))
+  
+  p2 <- (tad_overlaps_genes  %>% as.data.frame() %>% 
+       group_by(subjectHits) %>% # gene region
+       summarize(n = n()) %>% # get number of peaks overlapping with a gene region
+       ggplot() + geom_histogram(aes(x = n), bins = 100, fill="#69b3a2") +
+       labs(title = "Number of hvg genes per tad boundary",
+           x = "number of genes"))
+  
+  print(cowplot::plot_grid(p1, p2, ncol = 2))
+  
+  
+  # combine the annotation dataframe with the p2g links dataframe
+  p2g_join <- left_join(links, as.data.frame(pos_atac_granges),
+                        by = "idxATAC")
+  p2g_join <- left_join(p2g_join, as.data.frame(gene_anno),
+                        by = "idxRNA", suffix = c(".atac", ".rna"))
+
+  # compute distance 
+  p2g_join <- p2g_join %>% 
+    mutate(distance = abs(start_coord - middle))
+  
+  # filter for the p2g links within tad boundaries
+  corr_tad_boundary <- p2g_join %>% 
+    unite(peak_gene_tad, gene, idxATAC, sep = "#", remove = FALSE) %>% 
+    filter(peak_gene_tad %in% gene_peak_tad_df$peak_gene_tad)
+
+  ### PLOTS
+  
+  p1 <- corr_tad_boundary %>% 
+    ggplot() +
+    geom_histogram(aes(x = Correlation), bins = 200, fill = "#69b3a2") +
+    labs(title = "Correlation values of peak-to-gene links found within tad boundaries")
+  
+  p2 <- corr_tad_boundary %>% 
+    ggplot() +
+    geom_histogram(aes(x = distance), bins = 200, fill = "#69b3a2") +
+    labs(title = "Distance between peaks and TSS within tad boundary")
+  
+  p3 <- corr_tad_boundary %>% 
+    mutate(bin = cut_width(distance, width=100000, boundary=0)) %>% 
+    ggplot() +
+    geom_boxplot(aes(x = bin, y = Correlation), fill = "#69b3a2") +
+    labs(title = "Distance and Correlation within tad boundary, 100kb bins",
+         x = "Distance (100kb bins)") +
+    scale_x_discrete(guide = guide_axis(angle = 90)) 
+
+  print(cowplot::plot_grid(p1, p2, p3, ncol = 1))
+  
+
+
+  
+  #### PLOT
+  p2 <- corr_tad_boundary %>% ggplot() +
+    geom_histogram(aes(x = distance), bins = 500) + 
+    scale_y_log10() +
+    labs(title = "Relative distance of peaks to TSS within tad boundaries",
+         x = "Relative distance to TSS", y = "log10(count)") + 
+    geom_vline(xintercept = c(100000, -100000), color = "red")
+  
+  print(p2)
+  #cowplot::plot_grid(p1, p2, ncol = 1)
+  
+  
+  
+  p2g_links_tad <- Matrix::sparseMatrix(
+      i = corr_tad_boundary$idxRNA, 
+      j = corr_tad_boundary$idxATAC, 
+      x = corr_tad_boundary$Correlation, 
+      dims = c(nrow(expr_mat), nrow(peak_mat)),
+      dimnames = list(rownames(expr_mat),rownames(peak_mat))
+    )
+  
+  
+  print(paste0("The maximum value is: ", max(p2g_links_tad), ", the minum value is: ", min(p2g_links_tad) ))
+  
+  
+  
+  p2g_links_tad <- p2g_links_tad[rowSums(p2g_links_tad) != 0, ]
+  p2g_links_tad <- p2g_links_tad[, colSums(p2g_links_tad) != 0]
+  
+  print(paste0("After removing any rows and columsn which do not contain any links we are left with ", nrow(p2g_links_tad), " genes and ", ncol(p2g_links_tad), " peaks."))
+  
+  
+  # Compute gene activity scores
+  tad_scores <- gene_activity_scores(peak_mat_sub[colnames(p2g_links_tad), ], p2g_links_tad)
+  
+  return(tad_scores) 
+}
+gc(reset = TRUE)
+```
+
+```{r, fig.width=8, fig.height=8}
+tad_scores <- tad_boundaries_p2g_scores(p2g_mat_sub = p2g_mat_sub,
+                                        peak_mat = peak_mat,
+                                        links = links, 
+                                        p2g_original = p2g, 
+                                        gene_expr = gene_expr,
+                                        tad_boundaries = tad_boundaries)
+
+gc(reset = TRUE)
+```
+
+
+```{r, fig.width=8, fig.height=5}
+gene_window_agg <- create_seacell_aggregates(tad_scores, seacells)
+gene_window_corr <- rowwise_correlations(seacell_rna_agg, gene_window_agg,
+                                         name = "Gene window around TSS")
+
+gene_window_corr[[2]]
+
+
+ggplot() +
+  geom_point(aes(y = seacell_corr_archr[[1]][names(gene_window_corr[[1]])], 
+                 x =gene_window_corr[[1]]))  +
+  geom_density_2d_filled(aes(y = seacell_corr_archr[[1]][names(gene_window_corr[[1]])],
+                             x = gene_window_corr[[1]]), alpha = 0.5) +
+  geom_line(aes(x = seacell_corr_archr[[1]][names(gene_window_corr[[1]])], 
+                y = seacell_corr_archr[[1]][names(gene_window_corr[[1]])], 
+                color = "red")) +
+  theme(legend.position = "None")  +
+  labs(x = "Correlation between gene expression and p2g activity scores, tad boundary",
+        y = "Correlation between gene expression and ArchR gene activity scores", 
+       title = "Peak-to-gene links within tad boundaries")
+
+```
+```{r, fig.width=8, fig.height=5}
+ggplot() +
+  geom_point(aes(y = seacell_corr_p2g[[1]][names(gene_window_corr[[1]])], 
+                 x =gene_window_corr[[1]]))  +
+  geom_density_2d_filled(aes(y = seacell_corr_p2g[[1]][names(gene_window_corr[[1]])],
+                             x = gene_window_corr[[1]]), alpha = 0.5) +
+  geom_line(aes(x = seacell_corr_p2g[[1]][names(gene_window_corr[[1]])], 
+                y = seacell_corr_p2g[[1]][names(gene_window_corr[[1]])], 
+                color = "red")) +
+  theme(legend.position = "None")  +
+  labs(x = "Correlation, tad boundaries",
+        y = "Correlation, all p2g links ", 
+       title = "Peak-to-gene links within tad boundaries vs. all links")
+```
+
+
+
+
+
+
+# Adapted Archr Gene Activity Score function
+
+ArchR provides a function to compute gene activity scores based on accessibility 
+in the regions around the gene. For this a tile matrix is used. This tile matrix 
+is a matrix where the genome is divided into bins of 500bp. If there is a
+Tn5 insertion in a bin the entry will be 1, if there is no insertion the entry
+will be 0. Importantly, they compared their function to 52 other functions
+and found their own function to be the best performing. 
+
+Here I tried to better understand how this function works and changed the source 
+code of the ArchR function to also take peak matrix as input and compute the gene activity 
+based on peaks, rather than based on tiles. Additionally, I adapted the funciton 
+in a way such that it takes tad boundaries as input and uses all peaks which are 
+within the same tad boundary as a gene to compute the activity scores. 
+
+There are two different options for computing gene activity scores in ArchR. First,
+we can use the TSS and create a gene window around it (+/- 100kp of TSS). All 
+insertions found within tiles within this gene window will be accumulated for the
+gene activity scores. If we set the option 'useGeneBoundaries=TRUE' then we will 
+make sure that no regions overlap between any two genes. If the gene window of 
+one gene overlaps with the gene window of another gene, those tiles are not 
+considered anymore. The disadvantage of this approac is that genes can be very 
+large (>100bp), meaning that in some cases the 100kp extension downstream of the
+TSS would not even contain the entire gene body. 
+
+Second, we can use the entire gene body and extend the gene window beyond the start
+and end coordinates of the gene body. Importantly, the gene body is extended 5kb
+upstream of the TSS, to also include the promoter region. Using the entire gene 
+body instead of only the TSS can be achieved by setting 'useTSS=FALSE'. In this 
+approach the gene window is created by extending -100kb upstream of the TSS -5kb
+and +100kb downstream of the gene end coordinate. This way, the entire gene body 
+will be included in the gene window. An unwanted consequence of this might be
+that very large genes could bias the gene activity scores. Therefore ArchR 
+introduces a weight for the inverse of the gene body size according to:
+
+$w = \frac{1}{gene size}$ with $w$ being the inverse of the gene size.
+$
+
+geneRegions$geneWeight <- 1 + m * (geneScaleFactor - 1) / (max(m) - min(m))$
+
+Additionally, ArchR uses a distance weight. Farther away tiles/peaks are less likely to 
+interact with a TSS than closer tiles/peaks. If the first approach, using only the
+TSS, the distance weights are computed as follows:
+
+$weight = e^{-(abs(distTSS/5000))}$ with $distTSS$ being the distance from the
+TSS. This way the weights decay exponentially with distance. The constant value
+of $5000$ is a parameter which could be optimized for different genes or datasets, 
+but here we will keep it constant. 
+
+In case the entire gene body is used, the distance weights are kept constant 
+for all tiles/peaks within the gene body and only decay beyond the gene body.
+
+$weight = \begin{cases} if (-5kb from TSS, TTS): 1 + e^{-1} \\ else: e^{-abs(distGB/5000) + e^{-1}} \end{cases}$
+
+
+
+
+## ArchR Gene Activity Scores using TAD boundaries
+
+Instead of using a +/-100kb window around the gene body, in the adapted 
+function all peaks which are within the same TAD boundary as the gene of interest
+are considered for the activity score of that gene. The distance weight with 
+c = 5000 is kept the same as for the default ArchR function. As can be seen below,
+extending the gene window to TAD boundaries yields very similar results compared
+to the default ArchR function. 
+
+```#{r}
+proj <- loadArchRProject("12_Copy1/")
+
+# proj <- addTADGeneScoreMatrix(
+#   proj,
+#   genes = getGenes(proj),
+#   peaks = getPeakSet(proj),
+#   tadBoundaries = tad_boundaries,
+#   geneModel = "exp(-abs(x)/5000) + exp(-1)",
+#   matrixName = "GeneScoreMatrix",
+#   extendUpstream = c(1000, 100000),
+#   extendDownstream = c(1000, 100000),
+#   geneUpstream = 5000, #New Param
+#   #geneDownstream = 0, #New Param
+#   useGeneBoundaries = FALSE,
+#   useTSS = FALSE, #New Param
+#   extendTSS = FALSE,
+#   tileSize = 500,
+#   ceiling = 4,
+#   geneScaleFactor = 5, #New Param
+#   scaleTo = 10000,
+#   excludeChr = c("chrY", "chrX", "chrM"),
+#   blacklist = getBlacklist(proj),
+#   threads = 1,
+#   parallelParam = NULL,
+#   subThreading = TRUE,
+#   force = TRUE,
+#   logFile = createLogFile(".addTADGeneScoreMat"))
+
+scores <- getMatrixFromProject(proj, useMatrix = "GeneScoreMatrix")
+score_mat <- assays(scores)[[1]]
+rownames(score_mat) <- rowData(scores)$name
+
+
+#saveRDS(scores, "tad_scores")
+```
+
+
+```#{r}
+ggplot() +
+  geom_histogram(aes(x = rowSums(score_mat)), bins = 200)
+```
+
+
+```#{r}
+# compute aggregates of ArchR gene activity score matrix
+default_archr <- create_seacell_aggregates(archr_scores_mat,
+                                           seacells)
+# compute aggregates for tad boundary ArchR gene activity score matrix
+tad_archr <- create_seacell_aggregates(score_mat, seacells)
+# compute aggregates of gene expression matrix
+rna_hvg <- create_seacell_aggregates(expr_sub, seacells)
+
+# correlation between gene expression values and default Archr gene activity scores
+default_archr_corr <- rowwise_correlations(rna_hvg, default_archr, 
+                                           "ArchR gene activity scores, SEAcells")
+# correlation between gene expression and TAD boundary gene activity scores
+tad_corr <- rowwise_correlations(rna_hvg, tad_archr, "ArchR gene activity scores within TAD boundaries, SEACells")
+
+cowplot::plot_grid(default_archr_corr[[2]], tad_corr[[2]], ncol = 2)
+
+ggplot() +
+  geom_point(aes(x = tad_corr[[1]], y = default_archr_corr[[1]][names(tad_corr[[1]])])) +
+  geom_density_2d_filled(aes(x = tad_corr[[1]], 
+                             y = default_archr_corr[[1]][names(tad_corr[[1]])]),
+                         alpha = .5) +
+  geom_line(aes(x = default_archr_corr[[1]], y = default_archr_corr[[1]]), col = "red") +
+  theme(legend.position = "None")  +
+  labs(x = "Correlation gene expression & ArchR TAD boundary scores",
+        title = "Restricting ArchR scores to within TAD boundaries",
+        y = "Correlation gene expression & ArchR gene activity scores")
+
+```
+
+
+### TAD boundares E7.5
+
+Since the TAD boundaries used here, are from gastrulation day E7.5. For the later
+time points no TAD boundaries are available. Therefore, in the following I will check 
+if the results improve in comparison to the default ArchR function when using only 
+data from E7.5. Since during gastrulation TAD boundaries might still be very 
+dynamic the improving effect of TAD boundaries could be diluted by later time points
+in the data. 
+
+What are th genes which get zero activity scores? Do they lie outside the TAD
+boundaries?
+
+```#{r}
+e75_meta <- colData(scores) %>% as.data.frame() %>%
+  filter(Sample %in% c("E7.5_rep1", "E7.5_rep2")) %>% 
+  rownames_to_column("cell")
+mat_75 <- score_mat[rownames(score_mat) %in% rownames(expr_sub), e75_meta$cell]
+seacells_sub <- seacells %>% filter(index %in% colnames(mat_75)) 
+
+# compute aggregates of ArchR gene activity score matrix
+default_archr <- create_seacell_aggregates(archr_scores_mat[rownames(archr_scores_mat) %in%
+                                                              rownames(expr_sub), 
+                                                            e75_meta$cell],
+                                           seacells_sub)
+# compute aggregates for tad boundary ArchR gene activity score matrix
+tad_archr <- create_seacell_aggregates(mat_75, seacells_sub)
+# compute aggregates of gene expression matrix
+rna_hvg <- create_seacell_aggregates(expr_sub[, e75_meta$cell], seacells_sub)
+
+# correlation between gene expression values and default Archr gene activity scores
+default_archr_corr <- rowwise_correlations(rna_hvg, default_archr, 
+                                           "ArchR gene activity scores, SEAcells")
+# correlation between gene expression and TAD boundary gene activity scores
+tad_corr <- rowwise_correlations(rna_hvg, tad_archr, "ArchR gene activity scores within TAD boundaries, SEACells")
+
+cowplot::plot_grid(default_archr_corr[[2]], tad_corr[[2]], ncol = 2)
+
+ggplot() +
+  geom_point(aes(x = tad_corr[[1]], y = default_archr_corr[[1]][names(tad_corr[[1]])])) +
+  geom_density_2d_filled(aes(x = tad_corr[[1]], 
+                             y = default_archr_corr[[1]][names(tad_corr[[1]])]),
+                         alpha = .5) +
+  geom_line(aes(x = default_archr_corr[[1]], y = default_archr_corr[[1]]), col = "red") +
+  theme(legend.position = "None")  +
+  labs(x = "Correlation gene expression & ArchR TAD boundary scores",
+        title = "Restricting ArchR scores to within TAD boundaries",
+        y = "Correlation gene expression & ArchR gene activity scores")
+```
+
+What are the genes which get zero correlation with gene expression?
+
+There are 8 genes which get zero correlation values between gene activity scores
+and gene expression. This is, because they get zero activity scores in all cells. However,
+the same genes are expressed to certain levels according to the gene expression 
+matrix. Two of the genes also get zero activity scores in the default ArchR 
+function (Prl2c3, Gsdmc4). The reason for is not immediately clear, since as long
+as there are peaks in a gene window, the distance weight will at least be 0.36 
+accorindg to the formula. One reason for zero values could be that these genes lie outside TAD 
+boundaries wich is in fact the case for four out of 8 genes.
+
+
+What is the explanation why Lyz2 and Gm13547  get activity scores of zero?
+
+```#{r}
+zero_genes <- names(tad_corr[[1]][tad_corr[[1]] == 0])
+
+zero_mat <- score_mat[zero_genes, ]
+rowSums(zero_mat) 
+
+
+# check the default ArchR scores for these genes
+rowSums(archr_scores_mat[zero_genes, ])
+
+# check the gene expression coutns for these genes
+rowSums(expr_mat[zero_genes,])
+
+
+p2g_pos <- p2g %>% as.data.frame() %>% filter(Correlation > 0) %>%
+  unite(link, idxRNA, idxATAC, sep = "%", remove = FALSE)
+
+gene_anno_all <- rowData(gene_expr) %>% as.data.frame() %>%
+  mutate(idxRNA = seq(nrow(.))) %>% 
+  filter(idxRNA %in% p2g_pos$idxRNA) %>%
+  mutate(strand = ifelse(strand == 1, "+", "-")) %>%
+  mutate(start_coord = ifelse(strand == "+", start, end)) %>% 
+  rename(gene = name) #%>% GRanges()
+
+# subset atac granges & get middle of each peak
+pos_atac_granges_all <- metadata(p2g)[[1]]  %>% 
+  as.data.frame() %>%
+  mutate(idxATAC = seq(nrow(.))) %>% 
+  # group_by(seqnames) %>%
+  # mutate(idx = seq_along(seqnames)) %>% 
+  # ungroup %>%
+  #tidyr::unite(chr_idx, seqnames, idx, remove = FALSE, sep = "_") %>% 
+  filter(idxATAC %in% p2g_pos$idxATAC) %>% 
+  mutate(middle = start + 300) #%>% GRanges() 
+
+
+
+# combine the three dataframes
+p2g_join_all <- left_join(p2g_pos, as.data.frame(pos_atac_granges_all),
+                      by = "idxATAC")
+p2g_join_all <- left_join(p2g_join_all, as.data.frame(gene_anno_all),
+                      by = "idxRNA", suffix = c(".atac", ".rna"))
+
+
+p2g_join_all <- p2g_join_all %>% 
+  mutate(distance = abs(start_coord - middle))
+
+
+
+  # find overlapping peaks and gene window in chromosome-aware fashion
+tad_overlaps_genes <- (findOverlaps(gene_anno_all %>% GRanges(), 
+                                              tad_boundaries))
+
+
+# get all genes which are found within tad boudnaries
+gene_anno_within_tad <- gene_anno_all[queryHits(tad_overlaps_genes),]
+
+
+# Lets examine the genes which are found within tad boundaries, but
+# get an activity score of zero nevertheless
+gene_anno_within_tad %>% filter(gene %in% zero_genes)
+
+
+gene_name = "Lyz2"
+chr_name = "chr2"
+chrx <- tad_boundaries %>% as.data.frame() %>% filter(seqnames == chr_name) %>%GRanges()
+hits <- findOverlaps(gene_anno_all %>% filter(gene == gene_name) %>% GRanges(),  chrx)
+start_tad <- start(chrx[subjectHits(hits),])
+end_tad <- end(chrx[subjectHits(hits),])
+start_gene <- start(gene_anno_all %>% filter(gene == gene_name) %>% GRanges())
+end_gene <- end(gene_anno_all %>% filter(gene == gene_name) %>% GRanges())
+print(paste0("Out of ", length(zero_genes), " genes,  ",  length(zero_genes[zero_genes %in% gene_anno_within_tad$gene]) , " genes are found within tad boundaries, while the rest are not."))
+pos_atac_granges_all %>% as.data.frame() %>% filter(seqnames == chr_name) %>%
+  filter(start > start_tad & end < end_tad)
+
+# 
+# zero_genes
+# 
+# idx <- (gene_anno_all %>% filter(gene %in% zero_genes))$idxRNA
+# 
+# idx %in% gene_anno_all[tad_overlaps_genes$queryHits,
+```
+
+
+
+## ArchR Gene Activity Scores using gene body
+
+<details>
+<summary>ArchR Gene Activity Scores using gene body</summary>
+
+```#{r}
+
+#saveArchRProject(ArchRProj = proj, outputDirectory = "12_Copy4/", load = FALSE)
+loadArchRProject("12_activity_scores_gene_body_peaks/")
+
+proj <- addKathiGeneScoreMatrix(
+  proj,
+  genes = getGenes(proj),
+  peaks = getPeakSet(proj),
+  geneModel = "exp(-abs(x)/5000) + exp(-1)",
+  matrixName = "GeneScoreMatrix",
+  extendUpstream = c(1000, 100000),
+  extendDownstream = c(1000, 100000),
+  #geneUpstream = 5000, #New Param
+  #geneDownstream = 0, #New Param
+  useGeneBoundaries = TRUE,
+  useTSS = FALSE, #New Param
+  extendTSS = FALSE,
+  tileSize = 500,
+  ceiling = 4,
+  geneScaleFactor = 5, #New Param
+  scaleTo = 10000,
+  excludeChr = c("chrY", "chrM"),
+  blacklist = getBlacklist(proj),
+  threads = 1,
+  parallelParam = NULL,
+  subThreading = TRUE,
+  force = TRUE,
+  logFile = createLogFile(".addKathiGeneScoreMat"))
+
+
+scores <- getMatrixFromProject(proj, useMatrix = "GeneScoreMatrix")
+
+scores_mat <- assays(scores)[[1]]
+rownames(scores_mat) <- rowData(scores)$name
+
+
+# sce <- SingleCellExperiment(list(scores=scores_mat),
+#                           rowData = as.data.frame(rowData(scores)),
+#                           colData = as.data.frame(colnames(scores_mat)))
+# 
+# writeH5AD(sce, "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/jupyter_notebooks/p2g_gene_activity_scores/archr_scores_gene_body_peak_based", X_name = "scores")
+
+```
+</details>
+
+Correlating gene expression with activity scores:
+
+```#{r}
+archr_gene_body_agg <- knn_aggregates(scores_mat, cell_agg_list)
+
+gene_body_knn <- rowwise_correlations(rna_agg, archr_gene_body_agg, "ArchR gene activity scores based on peak matrix, using gene body")
+
+
+cowplot::plot_grid(archr_knn[[2]], gene_body_knn[[2]], ncol = 2)
+
+p1 <- ggplot() + geom_density_2d_filled(aes(x = gene_body_knn[[1]], 
+                                      y = archr_knn[[1]]), alpha = .5) +
+  geom_point(aes(x = gene_body_knn[[1]], y = archr_knn[[1]])) +
+  geom_line(aes(x = gene_body_knn[[1]], y = gene_body_knn[[1]]), col = "red") +
+  theme(legend.position = "None") 
+```
+
+
+## ArchR Gene Activity Scores using TSS, no gene body
+
+<details>
+<summary>ArchR Gene Activity Scores using TSS, no gene body</summary>
+
+
+```#{r}
+
+proj <- loadArchRProject("12_activity_scores_TSS_tiles/")
+
+proj <- addGeneScoreMatrix(
+  proj,
+  genes = getGenes(proj),
+  geneModel = "exp(-abs(x)/5000)",
+  matrixName = "GeneScoreMatrix",
+  extendUpstream = c(1000, 100000),
+  extendDownstream = c(1000, 100000),
+  #geneUpstream = 5000, #New Param
+  #geneDownstream = 0, #New Param
+  useGeneBoundaries = TRUE,
+  useTSS = TRUE, #New Param
+  extendTSS = FALSE,
+  tileSize = 500,
+  ceiling = 4,
+  geneScaleFactor = 5, #New Param
+  scaleTo = 10000,
+  excludeChr = c("chrY", "chrM"),
+  blacklist = getBlacklist(proj),
+  threads = 1,
+  parallelParam = NULL,
+  subThreading = TRUE,
+  force = TRUE,
+  logFile = createLogFile(".addGeneScoreMatrix"))
+
+
+scores <- getMatrixFromProject(proj, useMatrix = "GeneScoreMatrix")
+
+scores_mat <- assays(scores)[[1]]
+rownames(scores_mat) <- rowData(scores)$name
+
+
+# sce <- SingleCellExperiment(list(scores=scores_mat),
+#                           rowData = as.data.frame(rowData(scores)),
+#                           colData = as.data.frame(colnames(scores_mat)))
+# 
+# writeH5AD(sce, "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/jupyter_notebooks/p2g_gene_activity_scores/archr_scores_tss", X_name = "scores")
+
+```
+
+## ArchR gene activity scores computed using TSS, no gene body and PeakMatrix instead of TileMatrix
+
+<details>
+<summary>ArchR gene activity scores computed using TSS, no gene body and PeakMatrix instead of TileMatrix</summary>
+
+```#{r}
+proj <- loadArchRProject("12_activity_scores_TSS_peaks/")
+
+proj <- addKathiGeneScoreMatrix(
+  proj,
+  genes = getGenes(proj),
+  peaks = getPeakSet(proj),
+  geneModel = "exp(-abs(x)/5000)",
+  matrixName = "GeneScoreMatrix",
+  extendUpstream = c(1000, 100000),
+  extendDownstream = c(1000, 100000),
+  #geneUpstream = 5000, #New Param
+  #geneDownstream = 0, #New Param
+  useGeneBoundaries = TRUE,
+  useTSS = TRUE, #New Param
+  extendTSS = FALSE,
+  tileSize = 500,
+  ceiling = 4,
+  geneScaleFactor = 5, #New Param
+  scaleTo = 10000,
+  excludeChr = c("chrY", "chrM"),
+  blacklist = getBlacklist(proj),
+  threads = 1,
+  parallelParam = NULL,
+  subThreading = TRUE,
+  force = TRUE,
+  logFile = createLogFile(".addKathiGeneScoreMat"))
+
+scores <- getMatrixFromProject(proj, useMatrix = "GeneScoreMatrix")
+
+scores_mat <- assays(scores)[[1]]
+rownames(scores_mat) <- rowData(scores)$name
+
+#
+# sce <- SingleCellExperiment(list(scores=scores_mat),
+#                           rowData = as.data.frame(rownames(scores_mat)),
+#                           colData = as.data.frame(colnames(scores_mat)))
+# 
+# writeH5AD(sce, "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/jupyter_notebooks/p2g_gene_activity_scores/archr_scores_peak_based", X_name = "scores")
+```
+
+```#{r}
+
+
+
+# sce <- SingleCellExperiment(list(p2g_mat = p2g_mat))
+# 
+# writeH5AD(sce, "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/jupyter_notebooks/p2g_gene_activity_scores/p2g_mat_250kb",
+#           X_name = "p2g_mat")
+
+# 
+# 
+# sce <- SingleCellExperiment(list(peak_mat = peak_mat))
+# 
+# writeH5AD(sce, "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/jupyter_notebooks/p2g_gene_activity_scores/peak_mat",
+#           X_name = "peak_mat")
+
+
+# cp_names <- colnames(colData(gene_expr))
+# cp_names[20] <- "celltypes"
+# colnames(colData(gene_expr)) <- cp_names
+
+sce <- SingleCellExperiment(list(genes = expr_mat),
+                           #rowData = as.data.frame(rownames(gene_expr)),
+                           colData = as.data.frame(colData(gene_expr)))
+
+# writeH5AD(sce, "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/jupyter_notebooks/p2g_gene_activity_scores/gene_expr_mat",
+#           X_name = "genes")
+# 
+# 
+# #p2g_mat_norm <- p2g_mat / rowSums(p2g_mat)
+# scores <- p2g_mat %*% peak_mat
+# scores <- t(t(scores) / colSums(scores))
+# stopifnot(any(is.na(scores)) == FALSE)
+# scores@x <- pmin(1e9, exp(scores@x) - 1)
+# 
+# 
+# 
+# sce <- SingleCellExperiment(list(investigation = investigation))
+# 
+# writeH5AD(sce, "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/jupyter_notebooks/p2g_gene_activity_scores/investigation_scores",
+#           X_name = "investigation")
+
+
+
+
+
+# latent embedding
+emb <- getReducedDims(
+  ArchRProj = proj,
+  reducedDims = "atac_LSI_100000",
+  returnMatrix = TRUE,
+  dimsToUse = 1:30,
+  scaleDims = NULL,
+  corCutOff = 0.75
+)
+dim(emb)
+
+
+sce <- SingleCellExperiment(list(embedding = emb))
+
+writeH5AD(sce, "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/jupyter_notebooks/p2g_gene_activity_scores/archr_lsi_embedding",
+          X_name = "embedding")
+
+
+```

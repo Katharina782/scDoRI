@@ -1,0 +1,306 @@
+---
+title: "p2g scores"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 5
+    code_folding: hide
+    toc_float: true
+    code_download: true
+    theme: cosmo
+    highlight: textmate
+---
+
+<style>
+body {
+text-align: justify}
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(cache = FALSE, autodep = TRUE, 
+                      collapse = TRUE, message = FALSE)
+knitr::opts_knit$set(root.dir = "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/")
+setwd("/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/")
+
+set.seed(1)
+```
+
+  
+```{r}
+## Load libraries
+
+
+suppressPackageStartupMessages({
+library(ArchR)
+library(rhdf5)
+library(tidyverse)
+library(reticulate)
+library(zellkonverter)
+library(Matrix)
+library(dichromat)
+#library(caret)
+h5disableFileLocking()})
+```
+
+
+
+```{r}
+proj <- loadArchRProject("15_gene_scores_from_p2g_as_gene_expr_matrix/")
+
+marker_genes <- c("Lamb1",  "Sparc", "Elf5", "Ascl2", "Tfap2c", "Ttr",
+                  "Apoa2", "Apoe", "Cystm1", "Emb", "Spink1",  "Krt19",
+                  "Dkk1", "Grhl3", "Trp63", "Grhl2",  "Pax6", "Pax2",
+                  "En1", "Foxd3", "Tfap2a", "Pax3", "Sox9",
+                  "Six3", "Hesx1", "Irx3", "Sox2", "Hoxb9", "Cdx4", 
+                  "Hes3", "Hba-a2", "Hba-a1",  "Hbb-bh1", "Gata1", "Cited4",
+                   "Cdh5", "Pecam1", "Anxa5", "Etv2", "Igf2",
+                  "Krt8", "Krt18", "Pmp22", "Ahnak", "Bmp4", "Tbx4", "Hoxa11", 
+                  "Hoxa10", "Tnnt2", "Myl4",  "Myl7", "Acta2", 
+                  "Smarcd3", "Tcf21", "Tbx6", "Dll1", "Aldh1a2", "Tcf15", 
+                  "Meox1", "Tbx1", "Gbx2", "Cdx1", "Hoxb1", "Hes7", "Osr1", 
+                  "Mesp2", "Lefty2", "Mesp1", "Cer1",  "Chrd", "T", 
+                  "Foxa2", "Pax7", "Fgf8", "Lhx1", "Gsc", "Mixl1", "Otx2", "Hhex",
+                   "Ifitm3", "Nkx1-2", "Eomes", "Nanog", "Utf1", 
+                  "Epcam", "Pou5f1")
+```
+
+### Gene Scores UMAPs
+
+```{r, fig.width=10, fig.height=50}
+
+#marker_genes <- c("Hba-a2", "Hba-a1",  "Hbb-bh1")
+p <- plotEmbedding(
+    ArchRProj = proj, 
+    colorBy = "GeneExpressionMatrix", 
+    name = marker_genes, 
+    embedding = "UMAP",
+    quantCut = c(0.01, 0.95),
+    imputeWeights = getImputeWeights(proj)
+)
+
+
+plots <- lapply(p, function(x){
+    x + guides(color = FALSE, fill = FALSE) + 
+    theme_ArchR(baseSize = 6.5) +
+    theme(plot.margin = unit(c(0, 0, 0, 0), "cm")) +
+    theme(
+        axis.text.x=element_blank(), 
+        axis.ticks.x=element_blank(), 
+        axis.text.y=element_blank(), 
+        axis.ticks.y=element_blank()
+    )
+})
+
+do.call(cowplot::plot_grid, c(list(ncol = 3),plots))
+
+```
+
+```#{r}
+p <- plotEmbedding(
+    ArchRProj = proj, 
+    colorBy = "GeneExpressionMatrix", 
+    name = "Gata6", 
+    embedding = "UMAP",
+    quantCut = c(0.01, 0.95)
+)
+
+p
+```
+
+### Gene Expression Matrix UMAPs
+```{r}
+rm(proj)
+rm(new_scores)
+gc(reset = TRUE)
+proj <- loadArchRProject("12_Ricards_peaks_ChromVar/")
+scores <- getMatrixFromProject(proj, useMatrix = "GeneExpressionMatrix")
+new_scores <- assays(scores)[[1]]
+rownames(new_scores) <- rowData(scores)$name
+rm(scores)
+gc(reset = TRUE)
+
+#marker_genes <- c("Hba-a2", "Hba-a1",  "Hbb-bh1")
+p <- plotEmbedding(
+    ArchRProj = proj, 
+    colorBy = "GeneExpressionMatrix", 
+    name = marker_genes, 
+    embedding = "UMAP",
+    quantCut = c(0.01, 0.95),
+    imputeWeights = getImputeWeights(proj)
+)
+
+
+plots <- lapply(p, function(x){
+    x + guides(color = FALSE, fill = FALSE) + 
+    theme_ArchR(baseSize = 6.5) +
+    theme(plot.margin = unit(c(0, 0, 0, 0), "cm")) +
+    theme(
+        axis.text.x=element_blank(), 
+        axis.ticks.x=element_blank(), 
+        axis.text.y=element_blank(), 
+        axis.ticks.y=element_blank()
+    )
+})
+
+do.call(cowplot::plot_grid, c(list(ncol = 3),plots))
+
+
+```
+
+
+
+# Correlation between gene activity score and gene expression:
+
+## Create cell aggregates
+
+```{r}
+gene_expression <- getMatrixFromProject(proj, useMatrix = "GeneExpressionMatrix")
+# extract gene expression matrix from gene expression object
+gene_expr_mat <- assays(gene_expression)[[1]]
+rownames(gene_expr_mat) <- rowData(gene_expression)$name
+rm(gene_expression)
+gc(reset = TRUE)
+
+# randomly sample 5% of cells
+sample_frac <- .05
+
+# out of all cells in the gene expression matrix randomly sample 5% without replacement
+sampled_cells <- sample(1:ncol(gene_expr_mat), sample_frac * ncol(gene_expr_mat), replace = FALSE)
+print(paste0("Sampling ", length(sampled_cells), " cells."))
+```
+
+
+
+## Add PCA
+
+
+
+
+```{r}
+library(Seurat)
+#atac_seurat <- readRDS("atac_Seurat_object")
+rna_seurat <- readRDS("Seurat_objects/rna_Seurat_object")
+
+# get the cell embeddings
+cell_embeddings <- Embeddings(object = rna_seurat, reduction = "pca")#[1:5, 1:5]
+
+
+# get gene score matrix
+#proj <- loadArchRProject("12_Ricards_peaks_ChromVar/")
+#gene_scores <- getMatrixFromProject(proj, useMatrix = "GeneScoreMatrix")
+```
+
+
+First, we want to use only genes which we find in our newly computed gene
+activity scores from p2g links, the gene expression matrix and the imputed gene
+scores from scATAC.
+
+```{r}
+
+#scores <- read.table("gene_scores_from_p2g/norm_simple_correction_no_scaling")
+```
+
+
+```{r}
+gc(reset = TRUE)
+# create nearest neighbor graph
+k <- 50
+
+# use only cells we also have in gene expr/score matrix and the first 30 PCs
+nn <- RANN::nn2(cell_embeddings[colnames(gene_expr_mat), 1:30], k = k)
+
+# get genes of interest, the top 2000 most highly variable features
+hvg <- rna_seurat@assays$originalexp@var.features
+
+# we are left with 1772 genes
+hvg <- hvg[hvg %in% rownames(new_scores)]
+length(hvg)
+
+
+# initialize matrix to store aggregate values
+rna_score <- matrix(0, nrow = length(hvg), ncol = length(sampled_cells))
+#atac_score <- matrix(0, nrow = length(hvg), ncol = length(sampled_cells))
+p2g_score <- matrix(0, nrow = length(hvg), ncol = length(sampled_cells))
+rownames(rna_score) <- hvg
+#rownames(atac_score) <- hvg
+rownames(p2g_score) <- hvg
+
+# reorder columns to match gene expression matrix columns
+#reord_gene_scores <- gene_score_mat[, colnames(gene_expr_mat)]
+reord_p2g_scores <- new_scores[, colnames(gene_expr_mat)]
+# 
+# 
+for(i in 1:length(sampled_cells)) {
+# check progress
+if (i %% 100 == 0) print(i)
+
+# get current cell
+cell <- sampled_cells[i]
+
+# aggregate the rna score for one gene and all nearest neighbors of the first
+# cell in our aggregate group of cells
+rna_score[hvg, i] <- sparseMatrixStats::rowMeans2(
+  gene_expr_mat[hvg, nn$nn.idx[cell, ]]
+)
+
+  # aggregate the atac score
+p2g_score[hvg,i] <- sparseMatrixStats::rowMeans2(
+  reord_p2g_scores[hvg, nn$nn.idx[cell,]]
+  )
+}
+
+# write.table(rna_score, "gene_scores_from_p2g/wrong_computation_good/rna_score")
+# write.table(p2g_score, "gene_scores_from_p2g/wrong_computation_good/p2g_score")
+
+```
+
+
+```{r}
+rm(rna_seurat)
+rm(gene_expr_mat)
+gc(reset= TRUE)
+```
+
+
+```{r}
+hvg <- hvg[hvg %in%rownames(rna_score)]
+
+comp_stats <- rbind(rna_score %>% set_rownames(paste0(hvg, "_#_rna_score")),
+                    p2g_score %>% set_rownames(paste0(hvg, "_#_p2g_score"))) %>% 
+  t() %>% 
+  as.matrix() %>% 
+  tibble::as_tibble() %>% 
+  mutate(cell_name = sampled_cells) %>% 
+  pivot_longer(cols = !cell_name, names_to = "name", values_to = "vals") %>%
+  separate(name, sep = "_#_", into= c("gene", "statistic")) %>% 
+  pivot_wider(names_from = statistic, values_from = vals)
+```
+
+
+```{r, fig.widht = 5, fig.height = 20}
+marker_genes <- c("Lamb1",  "Sparc", "Elf5", "Ascl2", "Tfap2c", "Ttr",
+                  "Apoa2", "Apoe", "Cystm1", "Emb", "Spink1",  "Krt19",
+                  "Dkk1", "Grhl3", "Trp63", "Grhl2",  "Pax6", "Pax2",
+                  "En1", "Foxd3", "Tfap2a", "Pax3", "Sox9",
+                  "Six3", "Hesx1", "Irx3", "Sox2", "Hoxb9", "Cdx4", 
+                  "Hes3", "Hba-a2", "Hba-a1",  "Hbb-bh1", "Gata1", "Cited4",
+                   "Cdh5", "Pecam1", "Anxa5", "Etv2", "Igf2",
+                  "Krt8", "Krt18", "Pmp22", "Ahnak", "Bmp4", "Tbx4", "Hoxa11", 
+                  "Hoxa10", "Tnnt2", "Myl4",  "Myl7", "Acta2", 
+                  "Smarcd3", "Tcf21", "Tbx6", "Dll1", "Aldh1a2", "Tcf15", 
+                  "Meox1", "Tbx1", "Gbx2", "Cdx1", "Hoxb1", "Hes7", "Osr1", 
+                  "Mesp2", "Lefty2", "Mesp1", "Cer1",  "Chrd", "T", 
+                  "Foxa2", "Pax7", "Fgf8", "Lhx1", "Gsc", "Mixl1", "Otx2", "Hhex",
+                   "Ifitm3", "Nkx1-2", "Eomes", "Nanog", "Utf1", 
+                  "Epcam", "Pou5f1")
+
+
+comp_stats %>%
+  filter(gene %in% marker_genes) %>%
+  ggplot(aes(x = rna_score, y = p2g_score)) +
+  geom_point(size=0.4, alpha=0.4) +
+  geom_smooth(formula = y ~ x, method = "lm", size=0.1) +
+  #ggpubr::stat_cor(aes(label = ..r.label..), method = "pearson", r.digits=2) +
+  facet_wrap(~ gene, scales="free", ncol = 5) +
+  labs(x = "RNA Counts", y = "P2G Gene Activity Score")
+```

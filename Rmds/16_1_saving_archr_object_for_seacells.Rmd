@@ -1,0 +1,91 @@
+---
+title: "Save ArchR Project for Python"
+  html_document:
+    toc: true
+    toc_depth: 2
+    code_folding: hide
+    toc_float: true
+    code_download: true
+    theme: cosmo
+    highlight: textmate
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(cache = FALSE)
+knitr::opts_knit$set(root.dir = "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data")
+setwd("/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data")
+set.seed(1)
+```
+
+```{r}
+suppressPackageStartupMessages({
+
+library(ArchR)
+library(tidyverse)
+library(SingleCellExperiment)
+library(zellkonverter)
+library(dtwclust)
+})
+```
+
+```{r}
+proj <- loadArchRProject("11")
+
+dir_path <- "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/jupyter_notebooks/SEACell_files/ArchR_object/"
+```
+
+
+```{r}
+# write.csv(getReducedDims(proj),  "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/jupyter_notebooks/SEACell_files/ArchR_object/svd.csv", quote=FALSE)
+write.csv(getCellColData(proj), paste0(dir_path, 'cell_metadata.csv'), quote=FALSE)
+```
+
+
+```#{r}
+# Gene scores
+gene.scores <- getMatrixFromProject(proj)
+scores <- assays(gene.scores)[['GeneScoreMatrix']]
+scores <- as.matrix(scores)
+rownames(scores) <- rowData(gene.scores)$name
+write.csv(scores, paste0(dir_path, 'gene_scores.csv'), quote=FALSE)
+```
+
+
+```{r}
+# Peak counts
+peaks <- getPeakSet(proj)
+peak.counts <- getMatrixFromProject(proj, 'PeakMatrix')
+
+# Reorder peaks 
+# Chromosome order
+chr_order <- sort(seqlevels(peaks))
+reordered_features <- list()
+for(chr in chr_order)
+    reordered_features[[chr]] = peaks[seqnames(peaks) == chr]
+reordered_features <- Reduce("c", reordered_features)    
+
+
+# Export counts
+#dir.create(paste0(dir_path, "peak_counts"))
+counts <- assays(peak.counts)[['PeakMatrix']]
+writeMM(counts, paste0(dir_path, 'peak_counts/counts.mtx'))
+write.csv(colnames(peak.counts), paste0(dir_path, 'peak_counts/cells.csv'), quote=FALSE)
+names(reordered_features) <- paste0("Peak%d", 1:length(reordered_features))
+write.csv(as.data.frame(reordered_features), paste0(dir_path, 'peak_counts/peaks.csv'), quote=FALSE)
+```
+
+
+
+```{r}
+gene.expr <- getMatrixFromProject(proj, useMatrix = "GeneExpressionMatrix")
+expr.mat <- as.matrix(assays(gene.expr)[[1]])
+rownames(expr.mat) <- rowData(gene.expr)$name
+write.csv(expr.mat, paste0(dir_path, 'gene_expr.csv'), quote=FALSE)
+
+
+write.csv(as.data.frame(rowData(gene.expr)), paste0(dir_path, "gene_expr_rowData.csv"), quote = FALSE)
+write.csv(colnames(gene.expr), paste0(dir_path, "gene_expr_cells.csv"), quote = FALSE)
+write.csv(as.data.frame(colData(gene.expr)), paste0(dir_path, "gene_expr_colData.csv"), quote = FALSE)
+
+
+```
+

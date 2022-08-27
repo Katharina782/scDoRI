@@ -1,0 +1,1242 @@
+---
+title: "Comparing ArchR function versions"
+bibliography: references.bib
+output: 
+  html_document:
+    toc: true
+    toc_depth: 2
+    code_folding: hide
+    toc_float: true
+    code_download: true
+    theme: cosmo
+    highlight: textmate
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(cache = FALSE)
+knitr::opts_knit$set(root.dir = "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data")
+setwd("/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data")
+set.seed(1)
+```
+
+```{r}
+suppressPackageStartupMessages({
+
+library(ArchR)
+library(tidyverse)
+library(SingleCellExperiment)
+library(zellkonverter)
+library(dtwclust)
+})
+```
+
+
+
+```{r}
+proj <- loadArchRProject("12_Ricards_peaks_ChromVar/", showLogo = FALSE)
+#saveArchRProject(proj, "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/11_added_Ricards_peaks_p2g_entire_chromosome")
+
+plot_dir <- "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/Plots_old_dataset/"
+
+```
+<details>
+
+<summary>Plot Themes</summary>
+
+```{r}
+CORR_THEME <-   theme(axis.text.x = element_text(size = 12),
+        axis.text.y = element_text(size = 12),
+        axis.title.x = element_text(size = 15), # change size of axis title
+        axis.title.y = element_text(size = 15),
+        plot.title = element_text(hjust = 0.5, size = 20),
+        legend.position = "None", 
+        panel.grid.major = element_line(colour = "grey"),   # Major grid lines
+        panel.background = element_rect(fill = "white", colour = "black"),
+        aspect.ratio = 1)  
+```
+
+Plot theme for plots which are much wider than high.
+
+```{r}
+THEME_LONG <-   theme(axis.text.x = element_text(size = 12),
+        axis.text.y = element_text(size = 12),
+        axis.title.x = element_text(size = 15), # change size of axis title
+        axis.title.y = element_text(size = 15),
+        plot.title = element_text(hjust = 0.5, size = 20),
+        legend.position = "None", 
+        panel.grid.major = element_line(colour = "grey"),   # Major grid lines
+        panel.background = element_rect(fill = "white", colour = "black"),
+        aspect.ratio = 0.2)
+```
+
+Plot theme for standard plots (slighly wider than high).
+
+```{r}
+CUSTOM_THEME <-   theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1, size = 12),
+        axis.text.y = element_text(size = 12),
+        axis.title.x = element_text(size = 20), # change size of axis title
+        axis.title.y = element_text(size = 20),
+        plot.title = element_text(hjust = 0.5, size = 25),
+        legend.position = "None", 
+        panel.grid.major = element_line(colour = "grey"),   # Major grid lines
+        panel.background = element_rect(fill = "white", colour = "black"),
+        aspect.ratio = 0.3)
+```
+
+```{r}
+ROW_CORR_THEME <-   theme(axis.text.x = element_text(size = 12),
+        axis.text.y = element_text(size = 12),
+        axis.title.x = element_text(size = 15), # change size of axis title
+        axis.title.y = element_text(size = 15),
+        plot.title = element_text(hjust = 0.5, size = 20),
+        legend.position = "None", 
+        panel.grid.major = element_line(colour = "grey"),   # Major grid lines
+        panel.background = element_rect(fill = "white", colour = "black"),
+        aspect.ratio = 0.4)  
+
+```
+
+</details>
+
+
+
+
+# P2G-link matrix 
+
+In order to get gene regulatory links, one can compute a simple correlation
+between accessible peaks and gene expression, in order to find peaks whose activity
+is highly correlated with expression of a certain gene. These are potential 
+enhancers of a gene. Since single cell data is very sparse, the common way to 
+compute correlatiosn is by aggregating accessibility and gene expression data
+across cell aggregates. In ArchR this is done by sampling 500 cells from the 
+entire dataset and finding the 50 nearest neighbors of these cells. These cell
+aggregates therefore reprsent groups of similar cells and can be used to compute
+correlations. 
+
+Notably, for computing links within a certain distance on the chromosome, ArchR
+does not take into consideration the strand orientation, but computes the 
+distance between the "start" coordinate and the peak middle coordinate. However,
+on the minus strand the TSS is the "end" coordinate. For the correlations this
+is not important, but in my computations I will use the TSS coordinate in
+a strand-aware fashion.
+
+
+Based on these putative peak-to-gene links, it is possible to compute gene activity
+scores. If these scores recapitulate gene expression well, this is a 
+validation of the links. Nevertheless, it is expected that gene activity scores
+correlate highly with gene expression, since the peaks used for the computation 
+are highly correlated with the genes per definition. In the following you will find a function to compute gene activity scores from peak-to-gene links, adpated from 
+Cicero, where gene activit scores are computed from co-accessible peaks.
+
+Furthermore, since peaks which are farther away from a gene on the genome are less likely 
+to regulate this gene, it is common to use distance weigths to penalize peaks which
+are highly correlated, but distant. However, I observed that using distance weigths
+decreases the correlation with gene expression, with less steep decay rates 
+resulting in better gene activity scores. This shows that the distance weights 
+lead to a lot of zero values when multiplied with the correlation values. Still,
+biologically very distant peaks are probably not correlated with a promoter, because 
+they are intereacting, but more likely, are arbitrary correlations. Finding a 
+good trade-off between considering correlations across large distances, but also
+using prior knowledge about the biology and restricting the links to a certain 
+window is non-trivial. The correct distance decay rate  probably depends on each individual gene and might differ across celltypes.
+
+Yet another approach would be to use only peaks, which are within +/- 100kb of the
+TSS of a gene, thereby, removing any peaks which are far away. This is similar to 
+the approach in ArchR. Here, the gene activity scores for each gene are computed
+based on all peaks which are within +/- 100bp of the TSS of the gene. As you 
+will see in the following plots using this approach leads to very high correlations
+between gene expression and gene activity scores. Computing the scores based on 
+peak-to-gene links offers only a minor improvement. 
+
+The main purpose of the entire excercise was to be able to compare the goodness 
+of these links to links obtained using scDoRi. This relationship will have to be 
+explored further. 
+
+```#{r}
+proj <- addPeak2GeneLinks(ArchRProj = proj,
+  reducedDims  = "atac_LSI_100000",
+  useMatrix = "GeneExpressionMatrix",
+  maxDist = 400000000,
+  verbose = TRUE
+  )
+
+p2g <- getPeak2GeneLinks(
+  ArchRProj = proj,
+  corCutOff = -1,
+  resolution = 1,
+  FDRCutOff = 1e-04,
+  varCutOffATAC = .25,
+  varCutOffRNA = .25, 
+  returnLoops = FALSE
+)
+```
+
+
+```{r}
+#saveRDS(p2g, "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/Rmds/peak2gene_links_entire_chromosome_25_04_2022")
+p2g <- readRDS( "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/Rmds/peak2gene_links_entire_chromosome_25_04_2022")
+```
+
+Read in the peak accessibility matrix and the gene expression matrix:
+
+```{r}
+# get peak matrix
+peaks <- getMatrixFromProject(proj, useMatrix = "PeakMatrix", binarize = FALSE)
+peak_mat <- assays(peaks)[[1]]
+
+# read in gne expresssion matrix
+gene_expr <- getMatrixFromProject(proj, 
+                                  useMatrix = "GeneExpressionMatrix")
+expr_mat <- assays(gene_expr)[[1]]
+rownames(expr_mat) <- rowData(gene_expr)$name
+
+# read in archr gene activity scores
+archr_scores <- getMatrixFromProject(proj, useMatrix = "GeneScoreMatrix")
+
+cp_names <- colnames(colData(archr_scores))
+cp_names[20] <- "celltypes"
+colnames(colData(archr_scores)) <- cp_names
+
+archr_scores_mat <- assays(archr_scores)[[1]]
+rownames(archr_scores_mat) <- rowData(archr_scores)$name
+```
+
+
+
+
+```{r}
+hvg_list <- read.table("jupyter_notebooks/hvg_list", sep = ",")$x
+
+
+# get RNA index of hvg
+meta_rna <- rowData(gene_expr) %>% as.data.frame() %>% mutate(row_index = seq(nrow(.)))
+idx <- (meta_rna %>% filter(name %in% hvg_list))$row_index
+
+expr_sub <- expr_mat[idx, ]
+```
+
+```{r}
+seacells <- read.csv("jupyter_notebooks/SEACell_files/SEACell_assignment")
+```
+
+
+```{r}
+links <- p2g %>% as.data.frame() %>% 
+  filter(Correlation > 0.2) %>% 
+  filter(idxRNA %in% idx) 
+
+stopifnot(all(links$Correlation > 0))
+```
+
+
+
+Create a p2g link matrix
+
+```{r}
+p2g_mat <- sparseMatrix(i = links$idxRNA,
+             j = links$idxATAC,
+             x= links$Correlation, 
+             dims = c(dim(expr_mat)[1],
+             dim(peak_mat)[1]))
+
+rownames(p2g_mat) <- rowData(gene_expr)$name
+
+
+rownames(peak_mat) <- seq.int(dim(peak_mat)[1])
+colnames(p2g_mat) <- seq.int(dim(peak_mat)[1])
+```
+
+
+
+Filter and prepare peak matrix and p2g links matrix:
+
+```{r}
+# remove columns of peaks which are not linked to any peak
+p2g_mat_sub <- p2g_mat[, colSums(p2g_mat) != 0]
+# use only highly variable genes
+p2g_mat_sub <- p2g_mat_sub[hvg_list, ]
+# remove any genes which are not linked to any peak
+p2g_mat_sub <- p2g_mat_sub[rowSums(p2g_mat_sub) != 0, ]
+stopifnot(all(rownames(p2g_mat_sub) %in% hvg_list))
+stopifnot(any(is.na(p2g_mat_sub) == FALSE))
+
+# keep only peaks which are linked to genes in the accessibility matrix
+peak_mat_sub <- peak_mat[colnames(p2g_mat_sub), ]
+stopifnot(rownames(peak_mat_sub) == colnames(p2g_mat_sub))
+#stopifnot(any(is.na(peak_mat_sub) == FALSE))
+stopifnot(dim(peak_mat_sub)[1] == dim(p2g_mat_sub)[2])
+
+expr_mat_sub <- expr_mat[as.vector(rownames(p2g_mat_sub)), ]
+```
+
+
+
+
+
+
+### Function to compute gene activity scores
+
+```{r}
+gene_activity_scores <- function(peak_mat, p2g_mat) {
+  #peak_mat_subset <- peak_mat[colnames(p2g_mat), ]
+  # normalize the p2g matrix by the total number of peaks linked to each gene
+  p2g_mat <- p2g_mat / rowSums(p2g_mat)
+  print(paste0("normalized the p2g matrix"))
+  stopifnot(any(is.na(p2g_mat)) == FALSE)
+  # Now we can compute a weighted sum of peak2gene correlations for each
+  # peak and gene
+  scores <- p2g_mat %*% peak_mat
+  print(paste0("Computed weightes sum of peaks for each gene and cell"))
+  # create a dataframe for computing the linear model
+  linear_model_df <- data.frame(cell = colnames(scores),
+                               total_activity = colSums(scores),
+                               total_sites = colSums(peak_mat))
+  # compute a linear model
+  activity_model <- stats::lm(log(total_activity) ~ log(total_sites),
+                            data = linear_model_df)
+  # extract the fitted model
+  linear_model_df$fitted_curve <- exp(as.vector(predict(activity_model,
+                                                         type = "response")))
+  # compute size factors from fitted model
+  size_factors <- mean(linear_model_df$fitted_curve) / linear_model_df$fitted_curve
+  # create diagonal matrix containing the size factors
+  size_factors_mat <- Matrix::Diagonal(x = size_factors)
+  #row.names(size_factors_mat) <- linear_model_df$cell
+  # normalize by library depth size factors
+  norm_scores <- Matrix::t(size_factors_mat %*% Matrix::t(scores))
+  print(paste0("Normalized for library size"))
+  # exponentiate, because RNA counts are log-normally distributed
+  norm_scores@x <- pmin(1e9, exp(norm_scores@x) - 1)
+  print(paste0("Exponentiated matrix"))
+  
+  # free some memory
+  #rm(peak_mat_subset)
+  rm(activity_model)
+  rm(scores)
+  gc(reset = TRUE)
+
+  # scale with total activity scores again
+  scale_factors <- Matrix::Diagonal(x = 1/Matrix::colSums(norm_scores))
+  print(paste0("Divided by total activity to get value between zero and one"))
+  
+  final_scores <- Matrix::t(scale_factors %*% Matrix::t(norm_scores))
+
+  return(final_scores)
+
+}
+
+```
+
+```{r}
+p2g_scores <- gene_activity_scores(peak_mat_sub, p2g_mat_sub)
+#saveRDS(p2g_scores, "ArchR_p2g_based_gene_activity_scores")
+```
+
+
+
+TODO: Add functions here, add ArchR aggregates and compute correlations as 
+scatter & density plot
+
+# Example of p2g links within 250kb
+
+
+```{r}
+cp_names <- colnames(colData(gene_expr))
+cp_names[20] <- "celltypes"
+colnames(colData(gene_expr)) <- cp_names
+
+#rownames(expr_mat) <- rowData(gene_expr)$name
+genes <- expr_mat[as.vector(rownames(p2g_scores)), ]
+
+stopifnot(any(rownames(genes) == rownames(p2g_scores)))
+
+
+
+```
+
+
+
+
+
+### Function to compute gene activity scores
+
+```{r}
+gene_activity_scores <- function(peak_mat, p2g_mat) {
+  #peak_mat_subset <- peak_mat[colnames(p2g_mat), ]
+  # normalize the p2g matrix by the total number of peaks linked to each gene
+  p2g_mat <- p2g_mat / rowSums(p2g_mat)
+  print(paste0("normalized the p2g matrix"))
+  stopifnot(any(is.na(p2g_mat)) == FALSE)
+  # Now we can compute a weighted sum of peak2gene correlations for each
+  # peak and gene
+  scores <- p2g_mat %*% peak_mat
+  print(paste0("Computed weightes sum of peaks for each gene and cell"))
+  # create a dataframe for computing the linear model
+  linear_model_df <- data.frame(cell = colnames(scores),
+                               total_activity = colSums(scores),
+                               total_sites = colSums(peak_mat))
+  # compute a linear model
+  activity_model <- stats::lm(log(total_activity) ~ log(total_sites),
+                            data = linear_model_df)
+  # extract the fitted model
+  linear_model_df$fitted_curve <- exp(as.vector(predict(activity_model,
+                                                         type = "response")))
+  # compute size factors from fitted model
+  size_factors <- mean(linear_model_df$fitted_curve) / linear_model_df$fitted_curve
+  # create diagonal matrix containing the size factors
+  size_factors_mat <- Matrix::Diagonal(x = size_factors)
+  #row.names(size_factors_mat) <- linear_model_df$cell
+  # normalize by library depth size factors
+  norm_scores <- Matrix::t(size_factors_mat %*% Matrix::t(scores))
+  print(paste0("Normalized for library size"))
+  # exponentiate, because RNA counts are log-normally distributed
+  norm_scores@x <- pmin(1e9, exp(norm_scores@x) - 1)
+  print(paste0("Exponentiated matrix"))
+  
+  # free some memory
+  #rm(peak_mat_subset)
+  rm(activity_model)
+  rm(scores)
+  gc(reset = TRUE)
+
+  # scale with total activity scores again
+  scale_factors <- Matrix::Diagonal(x = 1/Matrix::colSums(norm_scores))
+  print(paste0("Divided by total activity to get value between zero and one"))
+  
+  final_scores <- Matrix::t(scale_factors %*% Matrix::t(norm_scores))
+
+  return(final_scores)
+
+}
+
+```
+
+```{r}
+p2g_scores <- gene_activity_scores(peak_mat_sub, p2g_mat_sub)
+#saveRDS(p2g_scores, "ArchR_p2g_based_gene_activity_scores")
+```
+
+
+### Function to create aggregate matrices:
+
+```{r}
+# the data matrix needs to be of dimension features x cells
+# the column of the colData of the sce object where celltypes are stored
+# needs to be called "celltypes"
+create_celltype_aggregates <- function(sce, data_matrix, celltypes) {
+  #create empty matrix to store aggregates
+  agg <- matrix(data = 0,
+                nrow = nrow(data_matrix),
+                ncol = length(celltypes),
+                dimnames = list(rownames(data_matrix), celltypes))
+  
+
+  for (celltype in celltypes) {
+    barcodes <- rownames(colData(sce) %>%
+                           as.data.frame() %>%
+                           filter(celltypes == celltype))
+    agg[, celltype] <- rowSums(data_matrix[, barcodes])
+  }
+  return(agg)
+}
+
+
+create_celltype_aggregates_p2g_scores <- function(gene_expr_sce, p2g_score_matrix, celltypes) {
+    #create empty matrix to store aggregates
+  agg <- matrix(data = 0,
+                nrow = nrow(p2g_score_matrix),
+                ncol = length(celltypes),
+                dimnames = list(rownames(p2g_score_matrix), celltypes))
+  
+
+  for (celltype in celltypes) {
+    barcodes <- rownames(colData(gene_expr_sce) %>%
+                           as.data.frame() %>%
+                           filter(celltypes == celltype))
+    agg[, celltype] <- rowSums(p2g_score_matrix[, barcodes])
+  }
+  return(agg)
+}
+
+
+create_seacell_aggregates <- function(data_matrix, seacells_df){
+  agg <- matrix(data = 0,
+                nrow = nrow(data_matrix),
+                ncol = length(unique(seacells_df$SEACell)),
+                dimnames = list(rownames(data_matrix),
+                              unique(seacells_df$SEACell)))
+  #stopifnot(nrow(agg) == nrow(data_matrix))
+  for (seacell in unique(seacells_df$SEACell)){
+    #print(seacell)
+    barcodes <- (seacells_df %>% filter(SEACell == seacell))$index
+    #print(barcodes)
+    if (length(barcodes) == 1){
+      agg[, seacell] <- data_matrix[, barcodes]
+    } else{
+      agg[, seacell] <- rowSums(data_matrix[, barcodes])
+    }
+  }
+  return(agg)
+}
+
+```
+
+
+### Function to compute row-wise correlations between two matrices:
+
+```{r}
+rowwise_correlations <- function(MatrixA, MatrixB, name) {
+  intersect_genes <- intersect(rownames(MatrixA), rownames(MatrixB))
+  MatrixA <- MatrixA[intersect_genes, ]
+  MatrixB <- MatrixB[intersect_genes, ]
+  correlations <- c()
+  for (i in seq.int(dim(MatrixA)[1])) {
+    rowA <- MatrixA[i, ]
+    rowA <- rowA - mean(rowA)
+    if (sd(rowA) != 0) {
+      rowA <- rowA / sd(rowA)
+    }
+  
+    rowB <- MatrixB[i, ]
+    rowB <- rowB - mean(rowB)
+    if (sd(rowB) != 0){
+      rowB <- rowB / sd(rowB)
+    }
+    
+    corr_value <- mean(rowA * rowB)
+    correlations <- c(correlations, corr_value)
+  }
+  names(correlations) <- rownames(MatrixA)
+  plot <- ggplot() + geom_histogram(aes(x = correlations), 
+                                    bins = 200, 
+                                    fill="#69b3a2") +
+    labs(title = paste0(name)) +
+    ROW_CORR_THEME
+  return(list(correlations, plot))
+}
+```
+
+### Function to plot comparison of correlations
+
+```{r}
+comparing_correlations_plot <- function(x, y, x_label, y_label, title=title, path_to_save=path_to_save){
+  if(length(x) > length(y)){
+    print(ggplot() +
+      geom_point(aes(x = x[names(y)], y = y)) +
+      geom_density_2d_filled(aes(x = x[names(y)], y = y), alpha = .5)+
+      geom_line(aes(x = y, y = y), col = "red") +
+      labs(x = x_label, y = y_label, title = title) +
+      CORR_THEME)
+  } else {
+    print(ggplot() +
+      geom_point(aes(x = x, y = y[names(x)])) +
+      geom_density_2d_filled(aes(x = x, y = y[names(x)]), alpha = .5)+
+      geom_line(aes(x = y, y = y), col = "red") +
+      labs(x = paste0(x_label), y = paste0(y_label), title = paste0(title)) +
+      CORR_THEME)
+  }
+  
+  ggsave(paste0(path_to_save))
+
+}
+```
+
+
+
+
+# Celltype aggregates
+
+## ArchR gene activity scores
+
+To compute the correlations between gene expression and ArchR gene activity 
+scores I first aggregated cells according to celltypes to compute 
+correlations. As can be seen in the plot below, this yields very high 
+correlation values. This is as expected, since in [@Granja] the authors 
+compared 52 different ways of computing gene activity scores from ATAC-seq 
+data and found their method to be the best one. 
+
+
+```{r}
+# create matrix to store aggregates
+expr_agg <- matrix(data = 0, 
+                   nrow = dim(genes)[1],
+                   ncol = length(unique(colData(gene_expr)$celltypes)),
+                   dimnames  = list(rownames(p2g_scores),
+                   unique(colData(gene_expr)$celltypes)))
+
+
+# fill matrix
+for (celltype in unique(colData(gene_expr)$celltypes)){
+  barcodes <- rownames(colData(gene_expr) %>% 
+                         as.data.frame() %>% 
+                         filter(celltypes == celltype))
+  expr_agg[, celltype] <- rowSums(genes[, barcodes])
+}
+
+
+
+p2g_score_agg <- matrix(data = 0, 
+                        nrow = dim(p2g_scores)[1],
+                        ncol = length(unique(colData(gene_expr)$celltypes)),
+                        dimnames = list(rownames(p2g_scores),
+                                        unique(colData(gene_expr)$celltypes)))
+
+for (celltype in unique(colData(gene_expr)$celltypes)){
+  barcodes <- rownames(colData(gene_expr) %>% 
+                         as.data.frame() %>% 
+                         filter(celltypes == celltype))
+  p2g_score_agg[, celltype] <- rowSums(p2g_scores[, barcodes])
+}
+
+```
+
+
+```{r, fig.width=10, fig.height=6}
+archr_scores_sub <- archr_scores_mat[as.vector(rownames(expr_mat_sub)), ]
+
+name <- "ArchR_scores, Celltype aggregates"
+
+archr_scores_agg <- create_celltype_aggregates(archr_scores, archr_scores_sub, 
+                                               unique(colData(archr_scores)$celltypes))
+stopifnot(any(is.na(archr_scores_agg)) == FALSE)
+
+corrs_archr <- rowwise_correlations(expr_agg, archr_scores_agg, name)
+corrs_p2g <- rowwise_correlations(expr_agg, p2g_score_agg, "P2g activity scores, celltype aggregates")
+
+
+cowplot::plot_grid(corrs_archr[[2]], corrs_p2g[[2]])
+ggsave(paste0(plot_dir, "archr_p2g_correlations_cell_aggregates.pdf"))
+
+```
+
+
+
+```{r, fig.height=6, fig.width=6}
+#, fig.width = 5, fig.height=5}
+ggplot() + #geom_density2d_filled(aes(x = correlations_250kb, y = corrs[1])) #+
+  geom_point(aes(x = corrs_p2g[[1]], y = corrs_archr[[1]])) +
+  geom_density_2d_filled(aes(x = corrs_p2g[[1]], y = corrs_archr[[1]]), alpha = 0.5) +
+  geom_line(aes(x =  corrs_archr[[1]],  corrs_archr[[1]]), color = "red") +
+  labs(x = "Correlation gene expr. & p2g activity scores",
+       y = "Correlation gene expr. & ArchR gene activity scores",
+       title = "Celltype aggregates") +
+  CORR_THEME
+
+ggsave(paste0(plot_dir, "compare_archr_p2g_celltype_agg.pdf"))
+
+# ggplot() + geom_point(aes(x = archr_scores_sub["Hba-a1",], y = p2g_scores["Hba-a1",]))
+# ggplot() + geom_point(aes(x = archr_scores_sub["Gata6",], y = p2g_scores["Hba-a1",]))
+
+```
+
+# SEACell aggregates
+
+Instead of using celltype aggregates as above, another option is to
+use SEACells as described in [@Persad2022]. These were computed using
+Python and the resulting cell aggregates ("metacells") are used for
+aggregating gene expression and gene activity scores below. The correlations
+when using SEACells are much higher than the correlations obtained using 
+the ArchR cell aggregates. For this reason I will use SEACells for computing
+correlations in the following steps. 
+
+```{r, fig.width = 8, fig.height=5}
+
+
+seacells <- seacells %>% filter(index %in% colnames(expr_mat))
+
+stopifnot(nrow(p2g_scores) == nrow(expr_mat_sub))
+
+seacell_p2g_agg <- create_seacell_aggregates(p2g_scores, seacells)
+seacell_rna_agg  <- create_seacell_aggregates(expr_mat_sub, seacells)
+seacell_archr_agg <- create_seacell_aggregates(archr_scores_sub, seacells)
+
+
+seacell_corr_p2g <- rowwise_correlations(seacell_rna_agg , seacell_p2g_agg, 
+                                         "P2g links of entire chromosome, SEAcells" )
+
+seacell_corr_archr <- rowwise_correlations(seacell_rna_agg, seacell_archr_agg, 
+                                           "ArchR gene activity scores, SEAcells")
+
+cowplot::plot_grid(seacell_corr_p2g[[2]], seacell_corr_archr[[2]], ncol = 2)
+
+ggsave(paste0(plot_dir, "corr_archr_p2g_seacell_agg.pdf"))
+```
+
+```{r, fig.height=6, fig.width=6}
+
+ggplot() + #geom_density2d_filled(aes(x = correlations_250kb, y = corrs[1])) #+
+  geom_point(aes(x = seacell_corr_p2g[[1]], y = seacell_corr_archr[[1]])) +
+  geom_density_2d_filled(aes(x = seacell_corr_p2g[[1]], y = seacell_corr_archr[[1]]), alpha = 0.5) +
+  geom_line(aes(x = seacell_corr_archr[[1]], y = seacell_corr_archr[[1]]), color = "red" )  +
+  labs(x = "Correlation gene expr. & p2g activity scores",
+       y = "Correlation gene expr. & ArchR gene activity scores",
+       title = "SEACells") +
+  CORR_THEME
+
+ggsave(paste0(plot_dir, "comp_Archr_p2g_seacell_agg.pdf"))
+```
+
+
+
+# Adapted Archr Gene Activity Score function
+
+ArchR provides a function to compute gene activity scores based on accessibility 
+in the regions around the gene. For this a tile matrix is used. This tile matrix 
+is a matrix where the genome is divided into bins of 500bp. If there is a
+Tn5 insertion in a bin the entry will be 1, if there is no insertion the entry
+will be 0. Importantly, they compared their function to 52 other functions
+and found their own function to be the best performing. 
+
+Here I tried to better understand how this function works and changed the source 
+code of the ArchR function to also take peak matrix as input and compute the gene activity 
+based on peaks, rather than based on tiles. Additionally, I adapted the funciton 
+in a way such that it takes tad boundaries as input and uses all peaks which are 
+within the same tad boundary as a gene to compute the activity scores. 
+
+There are two different options for computing gene activity scores in ArchR. First,
+we can use the TSS and create a gene window around it (+/- 100kp of TSS). All 
+insertions found within tiles within this gene window will be accumulated for the
+gene activity scores. If we set the option 'useGeneBoundaries=TRUE' then we will 
+make sure that no regions overlap between any two genes. If the gene window of 
+one gene overlaps with the gene window of another gene, those tiles are not 
+considered anymore. The disadvantage of this approac is that genes can be very 
+large (>100bp), meaning that in some cases the 100kp extension downstream of the
+TSS would not even contain the entire gene body. 
+
+Second, we can use the entire gene body and extend the gene window beyond the start
+and end coordinates of the gene body. Importantly, the gene body is extended 5kb
+upstream of the TSS, to also include the promoter region. Using the entire gene 
+body instead of only the TSS can be achieved by setting 'useTSS=FALSE'. In this 
+approach the gene window is created by extending -100kb upstream of the TSS -5kb
+and +100kb downstream of the gene end coordinate. This way, the entire gene body 
+will be included in the gene window. An unwanted consequence of this might be
+that very large genes could bias the gene activity scores. Therefore ArchR 
+introduces a weight for the inverse of the gene body size according to:
+
+$w = \frac{1}{gene size}$ with $w$ being the inverse of the gene size.
+$
+
+geneRegions$geneWeight <- 1 + m * (geneScaleFactor - 1) / (max(m) - min(m))$
+
+Additionally, ArchR uses a distance weight. Farther away tiles/peaks are less likely to 
+interact with a TSS than closer tiles/peaks. If the first approach, using only the
+TSS, the distance weights are computed as follows:
+
+$weight = e^{-(abs(distTSS/5000))}$ with $distTSS$ being the distance from the
+TSS. This way the weights decay exponentially with distance. The constant value
+of $5000$ is a parameter which could be optimized for different genes or datasets, 
+but here we will keep it constant. 
+
+In case the entire gene body is used, the distance weights are kept constant 
+for all tiles/peaks within the gene body and only decay beyond the gene body.
+
+$weight = \begin{cases} if (-5kb from TSS, TTS): 1 + e^{-1} \\ else: e^{-abs(distGB/5000) + e^{-1}} \end{cases}$
+
+
+
+
+## ArchR Gene Activity Scores using TAD boundaries
+
+Instead of using a +/-100kb window around the gene body, in the adapted 
+function all peaks which are within the same TAD boundary as the gene of interest
+are considered for the activity score of that gene. The distance weight with 
+c = 5000 is kept the same as for the default ArchR function. As can be seen below,
+extending the gene window to TAD boundaries yields very similar results compared
+to the default ArchR function. 
+
+```{r}
+rm(p2g_scores)
+rm(peak_mat)
+rm(peaks)
+gc(reset = TRUE)
+```
+
+
+```{r, eval = FALSE}
+proj <- loadArchRProject("12_Copy1/")
+
+# proj <- addTADGeneScoreMatrix(
+#   proj,
+#   genes = getGenes(proj),
+#   peaks = getPeakSet(proj),
+#   tadBoundaries = tad_boundaries,
+#   geneModel = "exp(-abs(x)/5000) + exp(-1)",
+#   matrixName = "GeneScoreMatrix",
+#   extendUpstream = c(1000, 100000),
+#   extendDownstream = c(1000, 100000),
+#   geneUpstream = 5000, #New Param
+#   #geneDownstream = 0, #New Param
+#   useGeneBoundaries = FALSE,
+#   useTSS = FALSE, #New Param
+#   extendTSS = FALSE,
+#   tileSize = 500,
+#   ceiling = 4,
+#   geneScaleFactor = 5, #New Param
+#   scaleTo = 10000,
+#   excludeChr = c("chrY", "chrX", "chrM"),
+#   blacklist = getBlacklist(proj),
+#   threads = 1,
+#   parallelParam = NULL,
+#   subThreading = TRUE,
+#   force = TRUE,
+#   logFile = createLogFile(".addTADGeneScoreMat"))
+
+scores <- getMatrixFromProject(proj, useMatrix = "GeneScoreMatrix")
+
+
+saveRDS(scores, "tad_scores")
+```
+
+
+
+```{r}
+tad_scores <- readRDS("tad_scores")
+tad_mat <- assays(tad_scores)[[1]]
+rownames(tad_mat) <- rowData(tad_scores)$name
+```
+
+
+```{r, fig.height=6, fig.width=10}
+# compute aggregates of ArchR gene activity score matrix
+default_archr <- create_seacell_aggregates(archr_scores_mat,
+                                           seacells)
+# compute aggregates for tad boundary ArchR gene activity score matrix
+tad_archr <- create_seacell_aggregates(tad_mat[rownames(tad_mat) %in% hvg_list, ], seacells)
+# compute aggregates of gene expression matrix
+rna_hvg <- create_seacell_aggregates(expr_sub, seacells)
+
+# correlation between gene expression values and default Archr gene activity scores
+default_archr_corr <- rowwise_correlations(rna_hvg, default_archr, 
+                                           "ArchR gene activity scores, SEAcells")
+# correlation between gene expression and TAD boundary gene activity scores
+tad_corr <- rowwise_correlations(rna_hvg, tad_archr, "activity scores within TAD boundaries")
+
+cowplot::plot_grid(default_archr_corr[[2]], tad_corr[[2]], ncol = 2)
+
+ggsave(paste0(plot_dir, "corr_tad_archr.pdf"))
+```
+
+```{r, fig.height=6, fig.width=6}
+comparing_correlations_plot(x = tad_corr[[1]], 
+                            y = default_archr_corr[[1]], 
+                            x_label = "Correlation gene expr. & ArchR TAD boundary scores", 
+                            y_label = "Correlation gene expr. & ArchR gene activity scores",
+                            title = "Distance weight: exp(-abs(x)/500) + exp(-1)",
+                            path_to_save = paste0(plot_dir , "comparing_tad_500_distance_weights.pdf"))
+
+```
+
+<details>
+
+<summary>More investigations</summary>
+
+TAD boundaries E7.5
+
+Since the TAD boundaries used here, are from gastrulation day E7.5. For the later
+time points no TAD boundaries are available. Therefore, in the following I will check 
+if the results improve in comparison to the default ArchR function when using only 
+data from E7.5. Since during gastrulation TAD boundaries might still be very 
+dynamic the improving effect of TAD boundaries could be diluted by later time points
+in the data. 
+
+What are th genes which get zero activity scores? Do they lie outside the TAD
+boundaries?
+
+```#{r}
+e75_meta <- colData(tad_scores) %>% as.data.frame() %>%
+  filter(Sample %in% c("E7.5_rep1", "E7.5_rep2")) %>% 
+  rownames_to_column("cell")
+mat_75 <- tad_mat[rownames(tad_mat) %in% rownames(expr_sub), e75_meta$cell]
+seacells_sub <- seacells %>% filter(index %in% colnames(mat_75)) 
+
+# compute aggregates of ArchR gene activity score matrix
+default_archr <- create_seacell_aggregates(archr_scores_mat[rownames(archr_scores_mat) %in%
+                                                              rownames(expr_sub), 
+                                                            e75_meta$cell],
+                                           seacells_sub)
+# compute aggregates for tad boundary ArchR gene activity score matrix
+tad_archr <- create_seacell_aggregates(mat_75, seacells_sub)
+# compute aggregates of gene expression matrix
+rna_hvg <- create_seacell_aggregates(expr_sub[, e75_meta$cell], seacells_sub)
+
+# correlation between gene expression values and default Archr gene activity scores
+default_archr_corr <- rowwise_correlations(rna_hvg, default_archr, 
+                                           "ArchR gene activity scores, SEAcells")
+# correlation between gene expression and TAD boundary gene activity scores
+tad_corr <- rowwise_correlations(rna_hvg, tad_archr, "ArchR gene activity scores within TAD boundaries, SEACells")
+
+cowplot::plot_grid(default_archr_corr[[2]], tad_corr[[2]], ncol = 2)
+
+ggplot() +
+  geom_point(aes(x = tad_corr[[1]], y = default_archr_corr[[1]][names(tad_corr[[1]])])) +
+  geom_density_2d_filled(aes(x = tad_corr[[1]], 
+                             y = default_archr_corr[[1]][names(tad_corr[[1]])]),
+                         alpha = .5) +
+  geom_line(aes(x = default_archr_corr[[1]], y = default_archr_corr[[1]]), col = "red") +
+  theme(legend.position = "None")  +
+  labs(x = "Correlation gene expression & ArchR TAD boundary scores",
+        title = "Restricting ArchR scores to within TAD boundaries",
+        y = "Correlation gene expression & ArchR gene activity scores")
+```
+
+What are the genes which get zero correlation with gene expression?
+
+There are 8 genes which get zero correlation values between gene activity scores
+and gene expression. This is, because they get zero activity scores in all cells. However,
+the same genes are expressed to certain levels according to the gene expression 
+matrix. Two of the genes also get zero activity scores in the default ArchR 
+function (Prl2c3, Gsdmc4). The reason for is not immediately clear, since as long
+as there are peaks in a gene window, the distance weight will at least be 0.36 
+accorindg to the formula. One reason for zero values could be that these genes lie outside TAD 
+boundaries wich is in fact the case for four out of 8 genes.
+
+
+What is the explanation why Lyz2 and Gm13547  get activity scores of zero?
+
+```#{r}
+zero_genes <- names(tad_corr[[1]][tad_corr[[1]] == 0])
+
+zero_mat <- score_mat[zero_genes, ]
+rowSums(zero_mat) 
+
+
+# check the default ArchR scores for these genes
+rowSums(archr_scores_mat[zero_genes, ])
+
+# check the gene expression coutns for these genes
+rowSums(expr_mat[zero_genes,])
+
+
+p2g_pos <- p2g %>% as.data.frame() %>% filter(Correlation > 0) %>%
+  unite(link, idxRNA, idxATAC, sep = "%", remove = FALSE)
+
+gene_anno_all <- rowData(gene_expr) %>% as.data.frame() %>%
+  mutate(idxRNA = seq(nrow(.))) %>% 
+  filter(idxRNA %in% p2g_pos$idxRNA) %>%
+  mutate(strand = ifelse(strand == 1, "+", "-")) %>%
+  mutate(start_coord = ifelse(strand == "+", start, end)) %>% 
+  rename(gene = name) #%>% GRanges()
+
+# subset atac granges & get middle of each peak
+pos_atac_granges_all <- metadata(p2g)[[1]]  %>% 
+  as.data.frame() %>%
+  mutate(idxATAC = seq(nrow(.))) %>% 
+  # group_by(seqnames) %>%
+  # mutate(idx = seq_along(seqnames)) %>% 
+  # ungroup %>%
+  #tidyr::unite(chr_idx, seqnames, idx, remove = FALSE, sep = "_") %>% 
+  filter(idxATAC %in% p2g_pos$idxATAC) %>% 
+  mutate(middle = start + 300) #%>% GRanges() 
+
+
+
+# combine the three dataframes
+p2g_join_all <- left_join(p2g_pos, as.data.frame(pos_atac_granges_all),
+                      by = "idxATAC")
+p2g_join_all <- left_join(p2g_join_all, as.data.frame(gene_anno_all),
+                      by = "idxRNA", suffix = c(".atac", ".rna"))
+
+
+p2g_join_all <- p2g_join_all %>% 
+  mutate(distance = abs(start_coord - middle))
+
+
+
+  # find overlapping peaks and gene window in chromosome-aware fashion
+tad_overlaps_genes <- (findOverlaps(gene_anno_all %>% GRanges(), 
+                                              tad_boundaries))
+
+
+# get all genes which are found within tad boudnaries
+gene_anno_within_tad <- gene_anno_all[queryHits(tad_overlaps_genes),]
+
+
+# Lets examine the genes which are found within tad boundaries, but
+# get an activity score of zero nevertheless
+gene_anno_within_tad %>% filter(gene %in% zero_genes)
+
+
+gene_name = "Lyz2"
+chr_name = "chr2"
+chrx <- tad_boundaries %>% as.data.frame() %>% filter(seqnames == chr_name) %>%GRanges()
+hits <- findOverlaps(gene_anno_all %>% filter(gene == gene_name) %>% GRanges(),  chrx)
+start_tad <- start(chrx[subjectHits(hits),])
+end_tad <- end(chrx[subjectHits(hits),])
+start_gene <- start(gene_anno_all %>% filter(gene == gene_name) %>% GRanges())
+end_gene <- end(gene_anno_all %>% filter(gene == gene_name) %>% GRanges())
+print(paste0("Out of ", length(zero_genes), " genes,  ",  length(zero_genes[zero_genes %in% gene_anno_within_tad$gene]) , " genes are found within tad boundaries, while the rest are not."))
+pos_atac_granges_all %>% as.data.frame() %>% filter(seqnames == chr_name) %>%
+  filter(start > start_tad & end < end_tad)
+
+# 
+# zero_genes
+# 
+# idx <- (gene_anno_all %>% filter(gene %in% zero_genes))$idxRNA
+# 
+# idx %in% gene_anno_all[tad_overlaps_genes$queryHits,
+```
+
+</details>
+
+## TAD with different distance decay weight
+
+
+```{r, eval = FALSE}
+proj <- addTADGeneScoreMatrix(
+  proj,
+  genes = getGenes(proj),
+  peaks = getPeakSet(proj),
+  tadBoundaries = tad_boundaries,
+  geneModel = "exp(-abs(x)/500000) + exp(-1)",
+  matrixName = "GeneScoreMatrix_tad_500000",
+  extendUpstream = c(1000, 100000),
+  extendDownstream = c(1000, 100000),
+  geneUpstream = 5000, #New Param
+  #geneDownstream = 0, #New Param
+  useGeneBoundaries = FALSE,
+  useTSS = FALSE, #New Param
+  extendTSS = FALSE,
+  tileSize = 500,
+  ceiling = 4,
+  geneScaleFactor = 5, #New Param
+  scaleTo = 10000,
+  excludeChr = c("chrY", "chrX", "chrM"),
+  blacklist = getBlacklist(proj),
+  threads = 1,
+  parallelParam = NULL,
+  subThreading = TRUE,
+  force = TRUE,
+  logFile = createLogFile(".addTADGeneScoreMat"))
+
+scores <- getMatrixFromProject(proj, useMatrix = "tad_score_500k")
+```
+
+
+```{r}
+tad_500k <- readRDS("tad_scores_500k")
+tad_mat <- assays(tad_500k)[[1]]
+rownames(tad_mat) <- rowData(tad_scores)$name
+```
+
+```{r}
+# compute aggregates of ArchR gene activity score matrix
+default_archr <- create_seacell_aggregates(archr_scores_mat,
+                                           seacells)
+# compute aggregates for tad boundary ArchR gene activity score matrix
+tad_archr <- create_seacell_aggregates(tad_mat[rownames(tad_mat) %in% hvg_list, ], seacells)
+# compute aggregates of gene expression matrix
+rna_hvg <- create_seacell_aggregates(expr_sub, seacells)
+
+# correlation between gene expression values and default Archr gene activity scores
+default_archr_corr <- rowwise_correlations(rna_hvg, default_archr, 
+                                           "ArchR gene activity scores, SEAcells")
+# correlation between gene expression and TAD boundary gene activity scores
+tad_corr <- rowwise_correlations(rna_hvg, tad_archr, "ArchR gene activity scores within TAD boundaries, SEACells")
+
+cowplot::plot_grid(default_archr_corr[[2]], tad_corr[[2]], ncol = 2)
+
+```
+
+
+```{r, fig.height=6, fig.width=6}
+
+comparing_correlations_plot(x = tad_corr[[1]], 
+                            y = default_archr_corr[[1]], 
+                            y_label = "Correlation gene expr. & ArchR gene activity scores",
+                            x_label = "Correlation gene expr. & ArchR TAD boundary scores", 
+                            title = "Distance weight: exp(-abs(x)/500000) + exp(-1)",
+                            path_to_save = paste0(plot_dir , "comparing_tad_500k_distance_weights.pdf"))
+
+```
+
+
+```{r, eval = FALSE}
+# load Project
+proj <- loadArchRProject("12_activity_scores_gene_body_peaks/")
+
+
+### Gene body and Peak Matrix
+proj <- addKathiGeneScoreMatrix(
+  proj,
+  genes = getGenes(proj),
+  peaks = getPeakSet(proj),
+  geneModel = "exp(-abs(x)/5000) + exp(-1)",
+  matrixName = "GeneScoreMatrix_peaks_GB",
+  extendUpstream = c(1000, 100000),
+  extendDownstream = c(1000, 100000),
+  #geneUpstream = 5000, #New Param
+  #geneDownstream = 0, #New Param
+  useGeneBoundaries = TRUE,
+  useTSS = FALSE, #New Param
+  extendTSS = FALSE,
+  tileSize = 500,
+  ceiling = 4,
+  geneScaleFactor = 5, #New Param
+  scaleTo = 10000,
+  excludeChr = c("chrY", "chrM"),
+  blacklist = getBlacklist(proj),
+  threads = 1,
+  parallelParam = NULL,
+  subThreading = TRUE,
+  force = FALSE,
+  logFile = createLogFile(".addKathiGeneScoreMat"))
+
+
+scores <- getMatrixFromProject(proj, useMatrix = "GeneScoreMatrix_peaks_GB")
+
+
+saveRDS(scores, "scores_peaks_GB")
+
+rm(scores)
+gc(reset = TRUE)
+
+
+
+### use TSS
+proj <- addGeneScoreMatrix(
+  proj,
+  genes = getGenes(proj),
+  geneModel = "exp(-abs(x)/5000)",
+  matrixName = "GeneScoreMatrix_tss",
+  extendUpstream = c(1000, 100000),
+  extendDownstream = c(1000, 100000),
+  #geneUpstream = 5000, #New Param
+  #geneDownstream = 0, #New Param
+  useGeneBoundaries = TRUE,
+  useTSS = TRUE, #New Param
+  extendTSS = FALSE,
+  tileSize = 500,
+  ceiling = 4,
+  geneScaleFactor = 5, #New Param
+  scaleTo = 10000,
+  excludeChr = c("chrY", "chrM"),
+  blacklist = getBlacklist(proj),
+  threads = 1,
+  parallelParam = NULL,
+  subThreading = TRUE,
+  force = TRUE,
+  logFile = createLogFile(".addGeneScoreMatrix"))
+
+
+scores <- getMatrixFromProject(proj, useMatrix = "GeneScoreMatrix_tss")
+
+saveRDS(scores, "scores_tss")
+
+rm(scores)
+gc(reset = TRUE)
+
+### use TSS and Peaks
+proj <- addKathiGeneScoreMatrix(
+  proj,
+  genes = getGenes(proj),
+  peaks = getPeakSet(proj),
+  geneModel = "exp(-abs(x)/5000)",
+  matrixName = "GeneScoreMatrix_peaks_tss",
+  extendUpstream = c(1000, 100000),
+  extendDownstream = c(1000, 100000),
+  #geneUpstream = 5000, #New Param
+  #geneDownstream = 0, #New Param
+  useGeneBoundaries = TRUE,
+  useTSS = TRUE, #New Param
+  extendTSS = FALSE,
+  tileSize = 500,
+  ceiling = 4,
+  geneScaleFactor = 5, #New Param
+  scaleTo = 10000,
+  excludeChr = c("chrY", "chrM"),
+  blacklist = getBlacklist(proj),
+  threads = 1,
+  parallelParam = NULL,
+  subThreading = TRUE,
+  force = TRUE,
+  logFile = createLogFile(".addKathiGeneScoreMat"))
+
+scores <- getMatrixFromProject(proj, useMatrix = "GeneScoreMatrix_peaks_tss")
+
+saveRDS(scores, "scores_peaks_tss")
+
+rm(scores)
+gc(reset = TRUE)
+
+saveArchRProject(proj, "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data_new/Kathi/16_different_activity_score_versions/", load = FALSE)
+```
+
+
+
+
+## Different ArchR versions
+
+### Gene activity scores computed using peak matrix and gene body
+
+```{r}
+# read in gene activity score matrix 
+peaks_gb <- readRDS("scores_peaks_GB")
+peaks_gb_mat <- assays(peaks_gb)[[1]]
+rownames(peaks_gb_mat) <- rowData(peaks_gb)$name
+
+
+# compute aggregates for tad boundary ArchR gene activity score matrix
+peaks_gb_corr <- create_seacell_aggregates(peaks_gb_mat[hvg_list, ], seacells)
+# compute aggregates of gene expression matrix
+
+# correlation between gene expression and TAD boundary gene activity scores
+peak_corr <- rowwise_correlations(rna_hvg, peaks_gb_corr, "ArchR gene activity scores: peak matrix & gene body")
+
+cowplot::plot_grid(default_archr_corr[[2]], peak_corr[[2]], ncol = 2)
+```
+
+```{r, fig.height=6, fig.width=6}
+
+comparing_correlations_plot(x = peak_corr[[1]], 
+                            y = default_archr_corr[[1]], 
+                            y_label = "Correlations, Tile Matrix & Gene body",
+                            x_label = "Correlations, Peak Matrix & Gene body", 
+                            title = "Correlation gene expr. & ArchR gene activity scores",
+                            path_to_save = paste0(plot_dir , "comparing_peaks_tiles_gene_body.pdf"))
+
+```
+
+
+```{r}
+peaks_tss <- readRDS("scores_peaks_tss")
+peak_tss_mat <- assays(peaks_tss)[[1]]
+rownames(peak_tss_mat) <- rowData(peaks_tss)$name
+
+tiles_tss <- readRDS("scores_tss")
+tiles_tss_mat <- assays(tiles_tss)[[1]]
+rownames(tiles_tss_mat) <- rowData(tiles_tss)$name
+
+
+tiles_tss_agg <- create_seacell_aggregates(tiles_tss_mat[hvg_list, ], seacells)
+peaks_tss_agg <- create_seacell_aggregates(peak_tss_mat[hvg_list, ], seacells)
+
+tss_corr <- rowwise_correlations(rna_hvg, tiles_tss_agg, "ArchR gene activity scores: tile matrix & TSS")
+peaks_tss_corr <- rowwise_correlations(rna_hvg, peaks_tss_agg, "ArchR gene activity scores: peak matrix & TSS")
+
+
+cowplot::plot_grid(tss_corr[[2]], peaks_tss_corr[[2]], ncol = 2)
+
+```
+
+```{r, fig.height=6, fig.width=6}
+
+comparing_correlations_plot(y = tss_corr[[1]], 
+                            x = peaks_tss_corr[[1]], 
+                            y_label = "Correlations, Tile Matrix & TSS",
+                            x_label = "Correlations, Peak Matrix & TSS", 
+                            title = "Correlation gene expr. & ArchR gene activity scores",
+                            path_to_save = paste0(plot_dir , "comparing_peaks_tiles_tss.pdf"))
+
+
+```
+
+
+
+```{r}
+comparing_correlations_plot(y = default_archr_corr[[1]], 
+                            x = tss_corr[[1]], 
+                            y_label = "Correlations, Tile Matrix & Gene body",
+                            x_label = "Correlations, Tile Matrix & TSS", 
+                            title = "Correlation gene expr. & ArchR gene activity scores",
+                            path_to_save = paste0(plot_dir , "comparing_tiles_tss_genebody.pdf"))
+```
+

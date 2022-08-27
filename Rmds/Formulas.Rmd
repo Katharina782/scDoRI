@@ -1,0 +1,37 @@
+---
+title: "Processed scRNA-seq & scATAC-seq of mouse gastrulation"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 5
+    code_folding: hide
+    toc_float: true
+    code_download: true
+    theme: cosmo
+    highlight: textmate
+---
+
+
+$G_{ki} = \frac{e^{\tilde{R}_{ki}}-1}{\sum_k{e^{\tilde{R}_{ki}}-1}}$
+
+$\tilde{A_{ji}} = \frac{A_{ij}}{\sum_{j}{A}_{ij}}$
+
+
+$\tilde{R_{ki}} = \frac{R_{ki}}{\sum_{k}{R}_{ki}}$
+
+
+$\frac{U_{kj}}{\sum_{j}{U_{kj}}}$
+
+
+$e^{-(abs(d/5000))}$ with $d$ being the distance of a tile from the TSS.
+
+$T \in \mathbb{R}^{MxI}$ with $T_{mi}$ corresponding to the number of insertions
+mapping to tile $m$ in cell $i$ with values between 1 and 4. 
+
+$D \in \mathbb{R}^{GxM}$ with $D_[gm]$ corresponding to the distance weight for 
+tile $m$ in gene window $g$ which has size 200kb (+/- 100kb from TSS).
+
+Gene activity scores are computed as:
+
+$D*T = S$ with $S \in \mathbb{R}^{GxI}$ and $S_{gi}$ corresponding to the gene activity
+score for gene $g$ in cell $i$

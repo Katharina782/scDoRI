@@ -1,0 +1,626 @@
+---
+title: "Comparing ChromVar, deep learning ChromVar scores & scDoRI"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 5
+    code_folding: hide
+    toc_float: true
+    code_download: true
+    theme: cosmo
+    highlight: textmate
+---
+
+<style>
+body {
+text-align: justify}
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(cache = FALSE, autodep = TRUE, 
+                      collapse = TRUE, message = FALSE)
+knitr::opts_knit$set(root.dir = "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/")
+setwd("/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/")
+
+set.seed(1)
+```
+
+
+
+
+
+```{r}
+suppressPackageStartupMessages({
+library(ArchR)
+library(rhdf5)
+library(tidyverse)
+library(reticulate)
+library(zellkonverter)
+library(Matrix)
+library(dichromat)
+library(Seurat)
+#library(caret)
+h5disableFileLocking()})
+```
+
+
+
+```{r}
+proj <- loadArchRProject("12_Ricards_peaks_ChromVar")
+
+metadata <- as.data.frame(getCellColData(proj))
+
+```
+
+
+
+### ChromVar
+
+```{r}
+# get motif matrix
+motifs <- getMatrixFromProject(proj, useMatrix = "MotifMatrix")
+motif_mtx <- assays(motifs)[[2]]
+# remove index number from TFs
+tfs <- gsub("_.*", "", rownames(motifs))
+rownames(motif_mtx) <- tfs
+```
+
+
+
+### Gene expression
+
+```{r}
+gene_expr <- getMatrixFromProject(proj, useMatrix = "GeneExpressionMatrix")
+gene_expr_mat <- assays(gene_expr)[[1]]
+rownames(gene_expr_mat) <- rowData(gene_expr)$name
+colnames(gene_expr_mat) <- colnames(gene_expr)
+
+
+```
+
+### Deep learning ChromVar
+
+```{r}
+proj1 <- loadArchRProject("/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data_new/Kathi/06_deep_chromvar/")
+# get motif matrix
+deep_motifs <- getMatrixFromProject(proj1, useMatrix = "DeepLearningMotifs1")
+deep_motif_mtx <- assays(deep_motifs)[[2]]
+
+rownames(deep_motif_mtx) <- tolower(rownames(deep_motif_mtx))
+substr(rownames(deep_motif_mtx), 1, 1) <- toupper(substr(rownames(deep_motif_mtx), 1, 1))
+```
+
+
+### scDoRI
+
+```{r}
+scdori2 <- read_table("scDoRI_motif_importance1.tsv")
+scdori1 <- read_table("scDoRI_motif_importance2.tsv")
+
+scdori1 <- scdori1 %>% as.data.frame %>% column_to_rownames("cell_type")
+scdori1 <- as.matrix(scdori1)
+scdori1 <- t(scdori1)
+dim(scdori1)
+
+rownames(scdori1) %>% head
+
+
+rownames(scdori1) <- tolower(rownames(scdori1))
+rownames(scdori1) %>% head
+substr(rownames(scdori1), 1, 1) <- toupper(substr(rownames(scdori1), 1, 1))
+rownames(scdori1) %>% head
+```
+
+# Mean per celltype
+
+```{r}
+create_celltype_aggregates <- function(metadata, data_matrix, celltypes) {
+  #create empty matrix to store aggregates
+  agg <- matrix(data = 0,
+                nrow = nrow(data_matrix),
+                ncol = length(celltypes),
+                dimnames = list(rownames(data_matrix), celltypes))
+  
+
+  for (celltype in celltypes) {
+    barcodes <- rownames(metadata %>%
+                           as.data.frame() %>%
+                           dplyr::filter(celltypes == celltype))
+    if (length(barcodes) == 1){
+        agg[, celltype] <- data_matrix[, barcodes]
+        print(paste0("Warning! Celltype", celltype, "contains only one cell."))
+    } else{
+      agg[, celltype] <- rowMeans(data_matrix[, barcodes])
+    }
+  }
+  stopifnot(any(is.na(agg)) == FALSE)
+  return(agg)
+}
+
+
+```
+
+```{r}
+celltypes = unique(metadata$celltypes)
+
+motif_agg <- create_celltype_aggregates(metadata, data_matrix = motif_mtx, 
+                                        celltypes = celltypes)
+expr_agg <- create_celltype_aggregates(metadata, data_matrix = gene_expr_mat, 
+                                       celltypes = celltypes)
+deep_agg <- create_celltype_aggregates(metadata, data_matrix = deep_motif_mtx,
+                                       celltypes = celltypes)
+```
+
+
+```{r}
+markers <- c("Lamb1",  "Sparc", "Elf5", "Ascl2", "Tfap2c", "Ttr",
+                  "Apoa2", "Apoe", "Cystm1", "Emb", "Spink1",  "Krt19",
+                  "Dkk1", "Grhl3", "Trp63", "Grhl2",  "Pax6", "Pax2",
+                  "En1", "Foxd3", "Tfap2a", "Pax3", "Sox9",
+                  "Six3", "Hesx1", "Irx3", "Hoxb9", "Cdx4",
+                  "Hes3", "Hba-a2", "Hba-a1",  "Hbb-bh1", "Gata1",
+                   "Gata6",
+                  #"Gata6", "Gata5",
+                  "Cited4",
+                   "Cdh5", "Pecam1", "Anxa5", "Etv2", "Igf2",
+                  "Krt8", "Krt18", "Pmp22", "Ahnak", "Bmp4", "Tbx4", "Hoxa11",
+                  "Hoxa10", "Tnnt2", "Myl4",  "Myl7", "Acta2",
+                  "Smarcd3", "Tcf21", "Tbx6", "Dll1", "Aldh1a2", "Tcf15",
+                  "Meox1", "Tbx1", "Gbx2", "Cdx1", "Hoxb1", "Hes7", "Osr1",
+                  "Mesp2", "Lefty2", "Mesp1", "Cer1",  "Chrd", 
+                  "Foxa2", "Pax7", "Fgf8", "Lhx1", "Mixl1", "Otx2", "Hhex",
+                   "Ifitm3", "Nkx1-2", "Eomes", "Nanog", "Utf1",
+                  "Epcam", "Pou5f1" )
+```
+
+
+```#{r}
+markers <- markers[markers %in% rownames(deep_motif_mtx)]
+markers <- markers[markers %in% rownames(motif_mtx)]
+markers <- markers[markers %in% rownames(gene_expr_mat)]
+markers <- markers[markers %in% rownames(scdori1)]
+
+expr_sub <- expr_agg[markers, ]
+motif_sub <- motif_agg[markers, ]
+deep_sub <- deep_agg[markers, ]
+scdori1_sub <- scdori1[markers, ]
+```
+
+```{r}
+overlap <- intersect(rownames(deep_motif_mtx), rownames(motif_mtx))
+overlap <- intersect(overlap, rownames(gene_expr_mat))
+#overlap <- intersect(overlap, rownames(scdori1))
+expr_sub <- expr_agg[overlap, ]
+motif_sub <- motif_agg[overlap, ]
+deep_sub <- deep_agg[overlap, ]
+#scdori1_sub <- scdori1[overlap, ]
+```
+
+
+# Correlation with gene expression
+
+```{r}
+ROW_CORR_THEME <-   theme(axis.text.x = element_text(size = 12),
+        axis.text.y = element_text(size = 12),
+        axis.title.x = element_text(size = 15), # change size of axis title
+        axis.title.y = element_text(size = 15),
+        plot.title = element_text(hjust = 0.5, size = 20),
+        legend.position = "None", 
+        panel.grid.major = element_line(colour = "grey"),   # Major grid lines
+        panel.background = element_rect(fill = "white", colour = "black"),
+        aspect.ratio = 0.4) 
+
+rowwise_correlations <- function(MatrixA, MatrixB, name) {
+  intersect_genes <- intersect(rownames(MatrixA), rownames(MatrixB))
+  MatrixA <- MatrixA[intersect_genes, ]
+  MatrixB <- MatrixB[intersect_genes, ]
+  correlations <- c()
+  for (i in seq.int(dim(MatrixA)[1])) {
+    rowA <- MatrixA[i, ]
+    rowA <- rowA - mean(rowA)
+    if (sd(rowA) != 0) {
+      rowA <- rowA / sd(rowA)
+    }
+  
+    rowB <- MatrixB[i, ]
+    rowB <- rowB - mean(rowB)
+    if (sd(rowB) != 0){
+      rowB <- rowB / sd(rowB)
+    }
+    
+    corr_value <- mean(rowA * rowB)
+    correlations <- c(correlations, corr_value)
+  }
+  names(correlations) <- rownames(MatrixA)
+  plot <- ggplot() + geom_histogram(aes(x = correlations), 
+                                    bins = 20, 
+                                    fill="#69b3a2") + labs(title = paste0(name)) +
+    ROW_CORR_THEME
+    
+  return(list(correlations, plot))
+}
+```
+
+```{r}
+corr_chromvar <- rowwise_correlations(expr_sub, motif_sub, "Correlation expression & ChromVar scores")
+
+corr_deep <- rowwise_correlations(expr_sub, deep_sub, "Correlation expression & deep learning ChromVar scores")
+
+#corr_scdori <- rowwise_correlations(expr_sub, scdori1_sub, "Correlation expression & scDori motif importance")
+
+```
+
+```{r}
+CORR_THEME <-   theme(axis.text.x = element_text(size = 12),
+        axis.text.y = element_text(size = 12),
+        axis.title.x = element_text(size = 15), # change size of axis title
+        axis.title.y = element_text(size = 15),
+        plot.title = element_text(hjust = 0.5, size = 20),
+        legend.position = "None", 
+        panel.grid.major = element_line(colour = "grey"),   # Major grid lines
+        panel.background = element_rect(fill = "white", colour = "black"),
+        aspect.ratio = 1) 
+
+ggplot() + #geom_density2d_filled(aes(x = correlations_250kb, y = corrs[1])) #+
+  geom_point(aes(y = corr_chromvar[[1]], x = corr_deep[[1]])) +
+  geom_density_2d_filled(aes(y = corr_chromvar[[1]], x = corr_deep[[1]]), alpha = 0.5) +
+  geom_line(aes(x =  corr_chromvar[[1]],  corr_chromvar[[1]]), color = "red") +
+  geom_hline(yintercept = 0, color = "blue") +
+  geom_vline(xintercept = 0, color = "blue") +
+  labs(x = "Correlation gene expr. & deep learning ChromVar scores",
+       y = "Correlation gene expr. & ChromVar scores",
+       title = "Celltype aggregates") +
+  CORR_THEME
+```
+## Select outlier TFs:
+
+```{r}
+df <- data_frame("ChromVar" = corr_chromvar[[1]], "Deep" = corr_deep[[1]], 
+                 "TF" = names(corr_deep[[1]]))  
+  #pivot_longer(cols = c(ChromVar, Deep))  %>% 
+  #ggplot() + geom_boxplot(aes(x = name, y = value))
+
+outliers_chromvar <- df %>% filter(ChromVar > 0.5 & Deep < 0)
+outliers_deep <- df %>% filter(ChromVar < 0 & Deep > 0.5)
+
+outlier_tfs <- c(outliers_chromvar$TF, outliers_deep$TF)
+
+```
+
+
+```#{r}
+ggplot() + #geom_density2d_filled(aes(x = correlations_250kb, y = corrs[1])) #+
+  geom_point(aes(y = corr_scdori[[1]], x = corr_deep[[1]])) +
+  geom_density_2d_filled(aes(y = corr_scdori[[1]], x = corr_deep[[1]]), alpha = 0.5) +
+  geom_line(aes(x =  corr_scdori[[1]],  corr_scdori[[1]]), color = "red") +
+  geom_hline(yintercept = 0, color = "blue") +
+  geom_vline(xintercept = 0, color = "blue") +
+  labs(x = "Correlation gene expr. & deep learning ChromVar scores",
+       y = "Correlation gene expr. & scDoRI",
+       title = "Celltype aggregates") +
+  CORR_THEME
+```
+
+
+```#{r}
+ggplot() + #geom_density2d_filled(aes(x = correlations_250kb, y = corrs[1])) #+
+  geom_point(aes(y = corr_scdori[[1]], x = corr_deep[[1]])) +
+  geom_density_2d_filled(aes(y = corr_scdori[[1]], x = corr_deep[[1]]), alpha = 0.5) +
+  geom_line(aes(x =  corr_deep[[1]],  corr_deep[[1]]), color = "red") +
+  geom_hline(yintercept = 0, color = "blue") +
+  geom_vline(xintercept = 0, color = "blue") +
+  labs(x = "Correlation gene expr. & deep learning ChromVar scores",
+       y = "Correlation gene expr. & scDoRI2",
+       title = "Celltype aggregates") +
+  CORR_THEME
+```
+
+
+
+
+```{r}
+data_frame("ChromVar" = corr_chromvar[[1]],
+                 "Deep" = corr_deep[[1]]) %>% 
+  pivot_longer(cols = c(ChromVar, Deep))  %>% 
+  ggplot() + geom_boxplot(aes(x = name, y = value))
+#df1 <- df %>% as.data.frame() %>% pivot_longer(cols = c(ChromVar, Deep))
+#df %>% ggplot() + geom_boxplot(aes(x = name, y = value))
+```
+
+
+
+#### Plot functions 
+
+These functions might be buggy due to some indexing problems. At the end of this 
+script there are usable and robust functions whcih are however only for one plot
+at a time. Loop over those to get good plots
+
+```#{r}
+plot_score_per_celltypes <- function(tf, score_matrix, metadata_df, y_label){
+  motif_n <- score_matrix[rownames(score_matrix) %in% tf, ]
+  plot <- metadata_df %>% 
+    mutate(!!tf := motif_n) %>%
+    group_by(celltypes) %>%
+    summarise(mean = mean(!!(sym(tf)))) %>%
+    ggplot() +
+    geom_bar(aes(x = celltypes, y = mean, fill = celltypes), stat = "identity") +
+    scale_fill_manual(values = col) +
+    labs(y = paste0(y_label),
+         title = paste0(n)) +
+    BAR_THEME
+  
+  return(plot)
+}
+
+scatterplot <- function(tf, score_matrix_x, score_matrix_y, metadata_df, x_label, y_label){
+  motif_x <- score_matrix_x[rownames(score_matrix_x) %in% tf, ]
+  motif_y <- score_matrix_y[rownames(score_matrix_y) %in% tf, ]
+  plot <- metadata_df %>% 
+    mutate(tf_x := motif_x, tf_y := motif_y) %>%
+    group_by(celltypes) %>%
+    summarise_at(vars(tf_x, tf_y), mean) %>% 
+    ggplot() +
+    geom_smooth(aes(x = tf_x, y = tf_y),
+                formula = y ~ x, method = "lm", size =.1) +
+    geom_point(aes(x = tf_x, y = tf_y, col = celltypes, size = 1)) +
+    scale_color_manual(values = col) + 
+    labs(title = paste0(tf), 
+         x = paste0(x_label),
+         y = paste0(y_label)) +
+    SCATTER_THEME
+    
+  return(plot)
+}
+```
+
+
+```#{r}
+scatterplot2 <- function(tf, score_matrix_x, score_matrix_y, metadata_df, x_label, y_label){
+  motif_x <- score_matrix_x[tf, rownames(metadata_df)]
+  motif_y <- score_matrix_y[tf, rownames(metadata_df)]
+  plot <- metadata_df %>% 
+    mutate(tf_x := motif_x, tf_y := motif_y) %>%
+    group_by(celltypes) %>%
+    summarise_at(vars(tf_x, tf_y), mean) %>% 
+    ggplot() +
+    geom_smooth(aes(x = tf_x, y = tf_y),
+                formula = y ~ x, method = "lm", size =.1) +
+    geom_point(aes(x = tf_x, y = tf_y, col = celltypes, size = 1)) +
+    scale_color_manual(values = col) + 
+    labs(title = paste0(tf), 
+         x = paste0(x_label),
+         y = paste0(y_label)) +
+    SCATTER_THEME
+    
+  return(plot)
+}
+```
+
+
+
+
+
+
+
+
+
+#### Plot themes
+
+```{r}
+BAR_THEME <- theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1, size = 10),
+                   axis.text.y = element_text(size = 12),
+                   axis.title.x = element_text(size = 15), 
+                   axis.title.y = element_text(size = 15),
+                   plot.title = element_text(hjust = 0.5, size = 20),
+          legend.position = "none",
+          panel.grid.major = element_line(colour = "grey"),   # Major grid lines
+          panel.background = element_rect(fill = "white", colour = "black")) 
+
+SCATTER_THEME <- theme(axis.text.x = element_text(size = 12),
+                   axis.text.y = element_text(size = 12),
+                   axis.title.x = element_text(size = 15), 
+                   axis.title.y = element_text(size = 15),
+                   plot.title = element_text(hjust = 0.5, size = 20),
+          legend.position = "none",
+          panel.grid.major = element_line(colour = "grey"),   # Major grid lines
+          panel.background = element_rect(fill = "white", colour = "black")) 
+```
+
+
+#### Color theme
+
+```{r}
+colPalette_celltypes = c('#532C8A',
+ '#c19f70',
+ '#f9decf',
+ '#c9a997',
+ '#B51D8D',
+ '#3F84AA',
+ '#9e6762',
+ '#354E23',
+ '#F397C0',
+ '#ff891c',
+ '#635547',
+ '#C72228',
+ '#f79083',
+ '#EF4E22',
+ '#989898',
+ '#7F6874',
+ '#8870ad',
+ '#647a4f',
+ '#EF5A9D',
+ '#FBBE92',
+ '#139992',
+ '#cc7818',
+ '#DFCDE4',
+ '#8EC792',
+ '#C594BF',
+ '#C3C388',
+ '#0F4A9C',
+ '#FACB12',
+ '#8DB5CE',
+ '#1A1A1A',
+ '#C9EBFB',
+ '#DABE99',
+ '#65A83E',
+ '#005579',
+ '#CDE088',
+ '#f7f79e',
+ '#F6BFCB')
+
+celltypes <- (as.data.frame(getCellColData(proj)) %>% group_by(celltypes) %>% 
+ summarise(n = n()))$celltypes
+
+col <- setNames(colPalette_celltypes, celltypes)
+```
+
+Buggy: 
+
+```#{r, fig.width=10, fig.height=10}
+
+markers <- outlier_tfs
+for (n in markers){
+  ## BAR PLOTS
+  score_plot <- plot_score_per_celltypes(n, gene_expr_mat, metadata,
+                                         y_label = "Gene expression")
+  #ggsave(paste0(plot_dir, "score", n, ".pdf"))
+  
+  
+  motif_plot <- plot_score_per_celltypes(n, motif_mtx, metadata, 
+                                         y_label = "ChromVar scores")
+  #ggsave(paste0(plot_dir, "motif", n, ".pdf"))
+  
+  
+  deep_plot <- plot_score_per_celltypes(n, deep_motif_mtx, metadata,
+                                        y_label = "Deep learning ChromVar scores")
+  #ggsave(paste0(plot_dir, "deep", n, ".pdf"), deep_plot)
+  
+  
+  ## SCATTER PLOTS
+  scatter_motif <- scatterplot(n, gene_expr_mat, motif_mtx, metadata, 
+              x_label = "Gene expression",
+              y_label = "ChromVar scores")
+  #ggsave(paste0(plot_dir, "scatter_motif", n, ".pdf"), scatter_motif)
+
+  
+  scatter_deep <- scatterplot(n, gene_expr_mat, deep_motif_mtx, metadata,
+              x_label = "Gene expression",
+              y_label = "Deep learning ChromVar scores")
+  #ggsave(paste0(plot_dir, "scatter_deep", n, ".pdf"), scatter_deep)
+
+
+  ## Combine Plots
+  print(cowplot::plot_grid(score_plot, motif_plot, deep_plot,
+                           scatter_motif, scatter_deep, ncol = 3))
+  
+  
+}
+```
+
+```{r}
+stopifnot(all(rownames(metadata) %in% colnames(gene_expr_mat)))
+stopifnot(all(colnames(gene_expr_mat) %in% colnames(deep_motif_mtx)))
+stopifnot(all(colnames(gene_expr_mat) %in% colnames(motif_mtx)))
+
+meta_new <- metadata %>%
+  rownames_to_column(var="barcode")
+
+tf <- "Sox13"
+tibble::tibble(barcode = colnames(gene_expr_mat), 
+               expr = gene_expr_mat[tf, ],
+               score = deep_motif_mtx[tf, ],
+               chrom = motif_mtx[tf, ]) %>%
+  dplyr::left_join(meta_new, by="barcode") %>%
+  group_by(celltypes) %>%
+  summarise(mexpr = mean(expr), mscore=mean(score), mchrom=mean(chrom)) %>%
+  ggplot(aes(x=mexpr, y=mchrom)) +
+  geom_point(aes(col=celltypes)) +
+  geom_smooth(formula = y~x, method="lm") +
+  scale_color_manual(values=col)
+
+
+
+tibble::tibble(barcode = colnames(deep_motif_mtx), 
+               expr = deep_motif_mtx[tf, ]) %>%
+  dplyr::left_join(meta_new) %>%
+  group_by(celltypes) %>%
+  summarise(mexpr = mean(expr)) %>%
+  ggplot() +
+  geom_bar(aes(x=celltypes, y=mexpr, fill=celltypes), stat="identity") +
+  scale_fill_manual(values=col) +
+  NoLegend()
+
+
+
+tibble::tibble(barcode = colnames(motif_mtx), 
+               expr = motif_mtx[tf, ]) %>%
+  dplyr::left_join(meta_new) %>%
+  group_by(celltypes) %>%
+  summarise(mexpr = mean(expr)) %>%
+  ggplot() +
+  geom_bar(aes(x=celltypes, y=mexpr, fill=celltypes), stat="identity") +
+  scale_fill_manual(values=col) +
+  NoLegend()
+
+tibble::tibble(barcode = colnames(deep_motif_mtx), 
+               expr = deep_motif_mtx[tf, ]) %>%
+  dplyr::left_join(meta_new) %>%
+  group_by(celltypes) %>%
+  summarise(mexpr = mean(expr)) %>%
+  ggplot() +
+  geom_bar(aes(x=celltypes, y=mexpr, fill=celltypes), stat="identity") +
+  scale_fill_manual(values=col) +
+  NoLegend() +
+  BAR_THEME
+```
+
+
+
+
+```{r}
+df1 <- meta_new %>% select(barcode, celltypes)
+df2 <- tibble(barcode = colnames(gene_expr_mat)) %>%
+  dplyr::left_join(df1)
+sum(df1$celltypes == df2$celltypes)
+```
+
+
+
+
+```{r}
+
+markers <- c("Elf5", "Pax2", "Pax6", "Pax3", "Pax7", "Hoxb9", "Cdx4", "Hoxa11", "Hoxa10", "Tcf15", 
+  "Tbx1", "Tbx6", "Mesp2", "Mesp1", "Pouf51", "Gata1", "Gata2", "Gata3", "Gata4",  "Gata6", "Sox10",
+  "Sox11" ,"Sox13","Sox15","Sox17"      
+  ,"Sox2" , "Sox3", "Sox30", "Sox4", "Sox5", "Sox6", "Sox9", "Klf1", "Klf3", "Klf4", "Klf5", "Klf9" )
+
+# select only markers present in all three matrices 
+markers <- markers[markers %in% rownames(deep_motif_mtx)]
+markers <- markers[markers %in% rownames(motif_mtx)]
+
+
+test_vec <- c(1, 0, 1)
+
+test_vec %>% `names<-`(., c("bar", "foo", "here"))
+
+```
+
+
+```{r}
+## we can select rows of a matrix using pipe
+# gene_expr_mat %>% .[markers, ] will select the rows of the above specified markers
+# rbind combines the matrices by columns
+rbind(gene_expr_mat %>% .[markers, ] %>% `rownames<-`(., paste0("gex__", rownames(.))),
+      motif_mtx %>% .[markers, ] %>% `rownames<-`(., paste0("chrom__", rownames(.))),
+      deep_motif_mtx %>% .[markers, ] %>% `rownames<-`(., paste0("deep__", rownames(.)))) %>% 
+  t(.) %>% # transpose
+  as.data.frame() %>%
+  rownames_to_column("barcode") %>%
+  pivot_longer(cols=!barcode) %>%
+  mutate(stat = str_extract(name, "[^_]+(?=__)"),
+         gene = str_extract(name, "(?<=__)[^_]+"),
+         name = NULL) %>%
+  left_join(metadata %>% rownames_to_column() %>% select(c(rowname, celltypes)), 
+            by=c("barcode" = "rowname"))
+```
+

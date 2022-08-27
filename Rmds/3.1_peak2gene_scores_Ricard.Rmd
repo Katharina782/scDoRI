@@ -1,0 +1,651 @@
+---
+title: "Peak2Gene links and gene activity score"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 5
+    code_folding: hide
+    toc_float: true
+    code_download: true
+    theme: cosmo
+    highlight: textmate
+---
+
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(cache = FALSE, autodep = TRUE, 
+                      collapse = TRUE, message = FALSE)
+knitr::opts_knit$set(root.dir = "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/")
+setwd("/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/")
+
+set.seed(1)
+```
+
+  
+```{r}
+## Load libraries
+
+
+suppressPackageStartupMessages({
+library(ArchR)
+library(rhdf5)
+library(tidyverse)
+library(reticulate)
+library(zellkonverter)
+library(Seurat)
+library(Matrix)
+#library(caret)
+h5disableFileLocking()})
+```
+
+
+```{r}
+proj <- loadArchRProject("12_Ricards_peaks_ChromVar/")
+```
+
+```{r}
+proj <- addPeak2GeneLinks(  ArchRProj = proj,
+  reducedDims  = "atac_LSI_100000",
+  useMatrix = "GeneExpressionMatrix",
+  maxDist = 400000000,
+  verbose = FALSE, 
+  )
+```
+
+```{r}
+p2g <- getPeak2GeneLinks(
+  ArchRProj = proj,
+  corCutOff = -1,
+  resolution = 1,
+  FDRCutOff = 1e-04,
+  varCutOffATAC = .25,
+  varCutOffRNA = .25, 
+  returnLoops = FALSE
+)
+```
+
+## Remove any negative correlations
+
+```{r}
+#p2g_filt <- p2g %>% as.data.frame() %>% filter(Correlation >= 0)
+p2g_filt <- p2g
+```
+
+
+
+```{r}
+print(paste0("Number of peak2gene links found: ", dim(p2g)))
+print(paste0("Total number of peaks called in the dataset: ", length(metadata(p2g)$peakSet)))
+print(paste0("For each of the peaks we have metadata containing information on peakType, nearestGene, disttoGeneStart,etc..."))
+
+```
+
+
+First we will try not to binarize the matrix
+
+```{r}
+peaks <- getMatrixFromProject(proj, useMatrix = "PeakMatrix", binarize = FALSE)
+
+# get matrix
+peak_mat <- assays(peaks)[[1]]
+
+peakset <- as_tibble(getPeakSet(proj))
+peakset <- peakset %>% unite(chr_idx, seqnames, idx, sep = "_", remove = FALSE)
+
+rm(peaks)
+```
+
+
+
+
+
+
+```{r}
+# use index to asssign rownames to the matrix
+rownames(peak_mat) <- peakset$chr_idx
+
+
+# extract gene expression SE from the project
+#gene_expression <- getMatrixFromProject(proj, useMatrix = "GeneExpressionMatrix")
+
+
+print(paste0("The peak matrix has dimensions: ", dim(peak_mat)[[1]], " peaks and ", dim(peak_mat)[[2]], "cells"))
+#print(paste0("The gene expression matrix contains ", dim(gene_expression) [[1]], " genes"))
+
+```
+
+
+The p2g dataframe has a metadata component which contains a Granges object of 
+the relevant peaks. The idxATAC column of the p2g dataframe corresponds to this 
+Granges object. Below we extract the chr & chr_idx for later. We will also 
+extract the gene names based on the idx. 
+
+```{r}
+atac_chr_idx <- as.data.frame(metadata(p2g)[[1]])
+atac_chr_idx <- atac_chr_idx %>%  rownames_to_column("idxATAC") %>% 
+  group_by(seqnames) %>% 
+  # create idx per chromosome
+  mutate(idx = seq_along(seqnames)) %>% ungroup() %>% 
+  # create chr & index combination column, will be needed, since this is how we name peak matrix
+  tidyr::unite(chr_idx, seqnames, idx, remove = FALSE, sep = "_") %>% filter(idxATAC %in% p2g_filt$idxATAC) %>%
+  select(idxATAC, chr_idx) 
+
+
+atac_chr_idx$idxATAC <- as.integer(atac_chr_idx$idxATAC)
+
+# now we can merge this with the p2g dataframe based on the idxATAC column
+p2g_idx <- inner_join(atac_chr_idx, p2g_filt, by = "idxATAC",copy = TRUE)
+
+rm(atach_chr_idx)
+```
+
+
+```{r}
+# get gene names
+rna_idx <- as.data.frame(metadata(p2g)[[2]])
+rna_idx <- rna_idx %>% rownames_to_column("idxRNA") %>% 
+  group_by(seqnames) %>% 
+  mutate(idx = seq_along(seqnames)) %>% ungroup() %>% 
+  tidyr::unite(chr_idx_rna, seqnames, idx, remove = FALSE, sep = "_") %>% 
+  filter(idxRNA %in% p2g_idx$idxRNA) %>% 
+  select(idxRNA, name, chr_idx_rna) %>% rename("gene" = name)
+
+rna_idx$idxRNA <- as.integer(rna_idx$idxRNA)
+
+# combine this with the p2g dataframe
+p2g_idx <- inner_join(rna_idx, p2g_idx, by = "idxRNA", copy = TRUE)
+
+rm(p2g)
+rm(proj)
+rm(rna_idx)
+```
+
+
+
+
+
+Create a peak-to-gene link matrix:
+
+```{r}
+# create column and row indices for the unique peak and rna indices
+p2g_idx$ColIndex <- match(p2g_idx$chr_idx, unique(p2g_idx$chr_idx))
+p2g_idx$RowIndex <- match(p2g_idx$gene, unique(p2g_idx$gene))
+
+# create a sparse matrix with the correlation values
+p2g_mat <- sparseMatrix(i = p2g_idx$RowIndex, 
+                        j = p2g_idx$ColIndex,
+                        x = p2g_idx$Correlation,
+                        dims = c(length(unique(p2g_idx$gene)),
+                                 length(unique(p2g_idx$chr_idx))),
+                        dimnames = list(unique(p2g_idx$gene), 
+                                        unique(p2g_idx$chr_idx)))
+
+print(paste0("The sparse matrix of correlations has dimensions: ", dim(p2g_mat)[[1]], " genes and ", dim(p2g_mat)[[2]], " peaks."))
+rm(p2g_idx)
+gc(reset = TRUE)
+```
+
+
+```#{r}
+# remove some variables floating around 
+rm(metadata_p2g_rna)
+rm(metadata_p2g)
+rm(rna_idx)
+rm(atac_chr_idx)
+rm(p2g_idx)
+rm(peaks)
+```
+
+# Gene activity score computation
+
+Now we will calculate a weighted sum of accessible peaks in a cell. The weights
+are the corresponding correlation values between a particular peak $j$ and gene
+$k$. $A\in\mathbb{R}^{JxI}$ is the binary peak accessibility matrix with $A_{ji} = 1$
+if peak $j$ is found in cell $i$ and  $A_{ji} = 0$ otherwise.
+
+$R_{ki} = \sum{U_{kj}A_{ji}}$, where $R_{ki}$ corresponds to the gene activity 
+score of gene $k$ in cell $i$.
+
+$R = U I$ with $R \in \mathbb{R}^{KxI}$. 
+
+Below you can see the first few entries of this gene activity score matrix. Note 
+that some entries are negative.
+
+Try to simply divide by row sums: $\frac{U_{kj}}{\sum_{j}{U_{kj}}}$.
+
+```{r}
+# we subset the accessibility matrix to contain only peaks which are also 
+# included in our p2g matrix
+peak_mat <- peak_mat[colnames(p2g_mat), ]
+
+# normalize the p2g matrix by the total number of peaks linked to each gene
+p2g_mat <- p2g_mat / rowSums(p2g_mat)
+
+# Now we can compute a weighted sum of peak2gene correlations for each
+# peak and gene
+scores <- p2g_mat %*% peak_mat
+print(scores[1:5, 1:5])
+
+rm(p2g_mat)
+gc(reset = TRUE)
+```
+
+
+### Divide by total activity to account for different library sizes
+
+$\tilde{R_{ki}} = \frac{R_{ki}}{\sum_{k}{R_{ki}}}$
+
+
+```{r}
+scores <- Matrix::t(Matrix::t(scores) / 
+                    Matrix::colSums(scores))
+#sc_factor <- 1e4
+#pseudocount <- 1
+#lognorm <- log(norm * sc_factor + pseudocount)
+```
+
+
+### Linear regression to account for differences in library size.
+
+The aggregate correlation values will depend on scATAC-seq library depth in each 
+cell. We can capture this relationship with a linear regression. 
+
+$\log{\sum_{k}{r_k} = \beta_0 + \beta_A \log(\sum_j{A_{ji}})}$
+
+```{r}
+# lets create a copy of the matrix
+#scores <- corr_sum
+
+
+# create a dataframe for computing the linear model
+# normalization_df <- data.frame(cell = colnames(scores),
+#                                total_activity = colSums(scores),
+#                                total_sites = colSums(peak_mat))
+
+#plot the relationship between library depth and activity scores
+data.frame(cell = colnames(scores),
+           total_activity = colSums(scores),
+           total_sites = colSums(peak_mat)) %>%
+  ggplot(aes(x = total_sites, y = total_activity)) + geom_point() +
+  labs(title = "Relationship between activity scores and library depth", 
+       y = "total activity", x = "peaks")
+
+
+
+# # compute a linear model
+# activity_model <- stats::lm(log(total_activity) ~ log(total_sites), 
+#                             data = normalization_df)
+# 
+# 
+# # extract the fitted model
+# normalization_df$fitted_curve <- exp(as.vector(predict(activity_model, type = "response")))
+# 
+# # plot the fitted model
+# normalization_df %>% ggplot(aes(x = total_sites, y = fitted_curve)) + geom_point() +
+#   labs(title = "Fitted Model capturing relationship between activity scores and library depth", y = "Fitted curve - activity scores", x = "number of peaks") +
+#   geom_hline(yintercept = mean(normalization_df$fitted_curve), color = "orange")
+# 
+# print(paste0("Mean fitted activity: ", mean(normalization_df$fitted_curve)))
+```
+
+
+### SizeFactors
+
+The output of the linear model is used to scale the accessibility we computed
+above.
+
+$\tilde{R}_{ki}= R_{ki} * \frac{\sum_{i}{r_i}}{r_i}$
+
+If an activity score $R_{ki}$ for a given cell $i$ is smaller than the average activity score, the 
+size factor will be >1 and if the activity score  is bigger than the average 
+activity score the size factor will be <1. After correcting with the size factors we would expect the linear increase in activity with increasing number of accessibile 
+sites to be corrected for. 
+
+In the plot below we can see that we have corrected for this linear relationship.
+
+```#{r}
+# each cell is scaled by a factor corresponding to its library depth
+#size_factors <- log(normalization_df$fitted_curve) / mean(log(normalization_df$fitted_curve))
+#size_factors <- log(sum(normalization_df$fitted_curve)) / log(normalization_df$fitted_curve) 
+
+size_factors <- mean(normalization_df$fitted_curve) / normalization_df$fitted_curve
+
+
+ggplot(as.data.frame(size_factors), aes(x = size_factors)) +
+  geom_histogram(bins = 100) +
+  geom_vline(xintercept = 1, color="orange", alpha=0.8)
+
+#size_factors_mat <- Matrix::Diagonal(x = 1/size_factors)
+size_factors_mat <- Matrix::Diagonal(x = size_factors)
+
+row.names(size_factors_mat) <- normalization_df$cell
+size_factors_mat[1:5, 1:5]
+# adjust scores by size factors 
+new_scores <- Matrix::t(size_factors_mat %*% Matrix::t(scores))
+print(new_scores[1:5, 1:5])
+
+# plot the total sites vs total activities after correction
+df <- data.frame(cell = colnames(new_scores),
+                               total_activity = colSums(new_scores),
+                               total_sites = colSums(peak_mat_subset))
+df %>% ggplot(aes(x = total_sites, y = total_activity)) + 
+  geom_point(size=0.2, alpha=0.4) +
+  ggside::geom_ysidedensity() +
+  geom_hline(yintercept = mean(df$total_activity), color = "orange")
+
+print(paste0("Mean activity after correction (expected to be the same as the mean of the fitted activity: ", mean(df$total_activity)))
+```
+
+
+
+### Transform
+
+Then we exponentiate the values, because the RNA-seq measures are typically 
+log-normally distributed. To create relative exponentiated gene accessibility
+values, we scale them by the total exponentiated gene accesibility values. We 
+get our gene activity scores $G_{ki}$.
+
+Because for log transformation of gene expression counts we add a pseudocount, 
+we need to subtract one here:
+
+$e^{\tilde{R}} - 1$
+
+$G_{ki} = \frac{e^{\tilde{R}_{ki}}-1}{\sum_k{e^{\tilde{R}_{ki}}-1}}$
+
+Below you can see the first few entries of the exponentiated values, before scaling.
+
+```{r}
+# plot the total sites vs total activities after correction
+# this will set an upper bound to 1e9
+scores@x <- pmin(1e9, exp(scores@x) - 1)
+print(scores[1:5, 1:5])
+```
+
+
+
+```#{r}
+min(new_scores)
+max(new_scores)
+```
+
+
+### Scaling by total gene activity in a given cell
+
+If we already divided by the colSums above, do we need to do this again?
+
+Here, you can see the first few entries of the transformed matrix. The column
+sum is now 1. 
+
+```{r}
+# scale with total activity scores again
+scale_factors <- Matrix::Diagonal(x = 1/Matrix::colSums(scores))
+
+new_scores <- Matrix::t(scale_factors %*% Matrix::t(scores))
+print(scores[1:5, 1:5])
+
+# Check whether the column sum is 1:
+colSums(scores)%>% head
+
+
+# plot the total sites vs total activities after correction
+corrected_df <- data.frame(cell = colnames(corr_sum),
+                               total_activity = colSums(scores),
+                               total_sites = colSums(peak_mat))
+corrected_df %>% ggplot(aes(x = total_sites, y = total_activity)) + geom_point()
+
+
+print(paste0("The minimum value is: ", min(scores)))
+print(paste0("The maximum value is: ", max(scores)))
+```
+
+
+
+
+```{r}
+tibble::tibble(
+  gene = rownames(scores),
+  mean = Matrix::rowMeans(scores), 
+  detection_rate = Matrix::rowMeans(scores > 0), 
+  var = MatrixGenerics::rowVars(scores)) %>%
+  mutate(log10_mean = log10(mean),
+         log10_var = log10(var)) %>% 
+  ggplot(aes(log10_mean, log10_var)) + 
+  geom_point(alpha = 0.3, shape = 16) + 
+  geom_density_2d(size = 0.3, bins = 6) + 
+  geom_abline(intercept = 0, slope = 1, color = "red") +
+  labs(x = "Log10 Mean",y = "Log10 Var")
+```
+
+
+# Correlation between gene activity score and gene expression:
+
+## Create cell aggregates
+
+```{r}
+# extract gene expression matrix from gene expression object
+gene_expr_mat <- assays(gene_expression)[[1]]
+rownames(gene_expr_mat) <- rowData(gene_expression)$name
+
+# randomly sample 5% of cells
+sample_frac <- .05
+
+# out of all cells in the gene expression matrix randomly sample 5% without replacement
+sampled_cells <- sample(1:ncol(gene_expr_mat), sample_frac * ncol(gene_expr_mat), replace = FALSE)
+print(paste0("Sampling ", length(sampled_cells), " cells."))
+```
+
+```{r}
+df <- as.data.frame(cbind(getCellColData(proj), getEmbedding(proj)) ) %>%
+  rename(c(umap1_100k_lsi = atac_LSI_100000.UMAP_Dimension_1, umap2_100k_lsi  = atac_LSI_100000.UMAP_Dimension_2))
+
+
+proj <- addCellColData(
+  ArchRProj = proj,
+  data = df$umap1_100k_lsi,
+  name = "umap1",
+  cells = rownames(df),
+  force = FALSE
+)
+
+proj <- addCellColData(
+  ArchRProj = proj,
+  data = df$umap2_100k_lsi,
+  name = "umap2",
+  cells = rownames(df),
+  force = FALSE
+)
+
+```
+
+
+
+```{r}
+ggplot() +
+  geom_point(aes(x = getCellColData(proj)$umap1, y = getCellColData(proj)$umap2,
+                 color = (seq(1, ncol(gene_expr_mat)) %in% sampled_cells)), size = .2) +
+  guides(color = guide_legend(override.aes = list(size = 2))) +
+  coord_equal() +
+  labs(x = "umap1", y = "umap2", title = "Randomly sampling cells")
+```
+
+## Add PCA
+
+```{r}
+#atac_seurat <- readRDS("atac_Seurat_object")
+rna_seurat <- readRDS("rna_Seurat_object")
+
+# get the cell embeddings
+cell_embeddings <- Embeddings(object = rna_seurat, reduction = "pca")#[1:5, 1:5]
+
+
+# get gene score matrix
+proj <- loadArchRProject("12_Ricards_peaks_ChromVar/")
+gene_scores <- getMatrixFromProject(proj, useMatrix = "GeneScoreMatrix")
+```
+
+
+First, we want to use only genes which we find in our newly computed gene
+activity scores from p2g links, the gene expression matrix and the imputed gene
+scores from scATAC.
+
+```{r}
+
+
+```
+
+
+```{r}
+# create nearest neighbor graph
+k <- 50
+
+# use only cells we also have in gene expr/score matrix and the first 30 PCs
+nn <- RANN::nn2(cell_embeddings[colnames(gene_expr_mat), 1:30], k = k)
+
+# get genes of interest, the top 2000 most highly variable features
+hvg <- rna_seurat@assays$originalexp@var.features
+
+# we are left with 1772 genes
+hvg <- hvg[hvg %in% rownames(scores)]
+length(hvg)
+
+
+# initialize matrix to store aggregate values
+rna_score <- matrix(0, nrow = length(hvg), ncol = length(sampled_cells))
+#atac_score <- matrix(0, nrow = length(hvg), ncol = length(sampled_cells))
+p2g_score <- matrix(0, nrow = length(hvg), ncol = length(sampled_cells))
+rownames(rna_score) <- hvg
+#rownames(atac_score) <- hvg
+rownames(p2g_score) <- hvg
+
+# reorder columns to match gene expression matrix columns
+#reord_gene_scores <- gene_score_mat[, colnames(gene_expr_mat)]
+reord_p2g_scores <- scores[, colnames(gene_expr_mat)]
+
+
+for(i in 1:length(sampled_cells)) {
+  # check progress
+  if (i %% 100 == 0) print(i)
+  
+  # get current cell
+  cell <- sampled_cells[i]
+  
+  # aggregate the rna score for one gene and all nearest neighbors of the first 
+  # cell in our aggregate group of cells
+  rna_score[hvg, i] <- sparseMatrixStats::rowMeans2(
+    gene_expr_mat[hvg, nn$nn.idx[cell, ]]
+  )
+  
+    # aggregate the atac score
+  p2g_score[hvg,i] <- sparseMatrixStats::rowMeans2(
+    reord_p2g_scores[hvg, nn$nn.idx[cell,]]
+    )
+}
+
+
+```
+
+
+```{r}
+comp_stats <- rbind(rna_score %>% set_rownames(paste0(hvg, "_#_rna_score")),
+                    p2g_score %>% set_rownames(paste0(hvg, "_#_p2g_score"))) %>% 
+  t() %>% 
+  as.matrix() %>% 
+  tibble::as_tibble() %>% 
+  mutate(cell_name = sampled_cells) %>% 
+  pivot_longer(cols = !cell_name, names_to = "name", values_to = "vals") %>%
+  separate(name, sep = "_#_", into= c("gene", "statistic")) %>% 
+  pivot_wider(names_from = statistic, values_from = vals)
+```
+
+```{r, fig.width=10, fig.height=10}
+n <- 10
+genes_oi <- hvg[1:n]
+comp_stats %>%
+  filter(gene %in% genes_oi) %>%
+  ggplot(aes(x = rna_score, y = atac_score)) +
+  geom_point(size=0.4, alpha=0.4) +
+  geom_smooth(formula = y ~ x, method = "lm", size=0.1) +
+  #ggpubr::stat_cor(aes(label = ..r.label..), method = "pearson", r.digits=2) +
+  facet_wrap(~ gene, scales="free") +
+  labs(x = "RNA Counts", y = "ATAC Gene Score")
+```
+
+
+
+
+
+
+
+
+# Add gene score matrix to ArchR project
+
+
+```{r}
+proj <- loadArchRProject("11_added_Ricards_peaks/")
+```
+
+
+```{r}
+# get the Granges object from the Archr project
+archr_granges <-getGenes(proj)
+
+# filter for genes which are included in the gene expression matrix
+granges <- subset(archr_granges, symbol %in% rownames(new_scores))
+```
+
+
+
+
+We will now add the gene expression matrix to the ArchR object. First, we have to 
+convert the Single Cell Experiment to a Summarized Experiment.
+
+```{r}
+# create summarized experiment of the scRNA-seq
+seRNA <- SummarizedExperiment(assays = list(counts=new_scores),
+                          colData = colnames(new_scores),
+                          rowRanges = granges)
+seRNA
+
+
+# add RNA gene expression matrix to the ArchR object
+proj <- addGeneExpressionMatrix(input = proj, seRNA = seRNA, force = TRUE)
+
+
+# save the ArchR object with the added gene expression matrix
+#saveArchRProject(proj, outputDirectory = "13_added_gene_score_from_p2g/", load = FALSE)
+```
+
+
+```{r}
+marker_genes <- c("Lamb1",  "Sparc", "Elf5", "Ascl2", "Tfap2c", "Ttr",
+                  "Apoa2", "Apoe", "Cystm1", "Emb", "Spink1",  "Krt19",
+                  "Dkk1", "Grhl3", "Trp63", "Grhl2",  "Pax6", "Pax2",
+                  "En1", "Foxd3", "Tfap2a", "Pax3", "Sox9",
+                  "Six3", "Hesx1", "Irx3", "Sox2", "Hoxb9", "Cdx4", 
+                  "Hes3", "Hba-a2", "Hba-a1",  "Hbb-bh1", "Gata1", "Cited4",
+                   "Cdh5", "Pecam1", "Anxa5", "Etv2", "Igf2",
+                  "Krt8", "Krt18", "Pmp22", "Ahnak", "Bmp4", "Tbx4", "Hoxa11", 
+                  "Hoxa10", "Tnnt2", "Myl4",  "Myl7", "Acta2", 
+                  "Smarcd3", "Tcf21", "Tbx6", "Dll1", "Aldh1a2", "Tcf15", 
+                  "Meox1", "Tbx1", "Gbx2", "Cdx1", "Hoxb1", "Hes7", "Osr1", 
+                  "Mesp2", "Lefty2", "Mesp1", "Cer1",  "Chrd", "T", 
+                  "Foxa2", "Pax7", "Fgf8", "Lhx1", "Gsc", "Mixl1", "Otx2", "Hhex",
+                   "Ifitm3", "Nkx1-2", "Eomes", "Nanog", "Utf1", 
+                  "Epcam", "Pou5f1")
+```
+
+```{r}
+
+#marker_genes <- c("Hba-a2", "Hba-a1",  "Hbb-bh1")
+p <- plotEmbedding(
+    ArchRProj = proj, 
+    colorBy = "GeneExpressionMatrix", 
+    name = marker_genes, 
+    embedding = "UMAP",
+    quantCut = c(0.01, 0.95),
+    imputeWeights = getImputeWeights(proj)
+)
+
+p
+```

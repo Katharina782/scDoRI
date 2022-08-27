@@ -1,0 +1,296 @@
+---
+title: "ArchR"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 5
+    code_folding: hide
+    toc_float: true
+    code_download: true
+    theme: cosmo
+    highlight: textmate
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(cache = FALSE, autodep = TRUE, 
+                      collapse = TRUE, message = FALSE)
+
+# set a directory for knitting
+knitr::opts_knit$set(root.dir = "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/")
+
+# set a working directory
+setwd("/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/")
+
+set.seed(1)
+```
+
+```{r}
+suppressPackageStartupMessages(library(ArchR))
+library(knitr)
+library(rhdf5)
+library(uwot)
+library(tidyverse)
+library(scater)
+library(zellkonverter)
+library(corrplot)
+#library(caret)
+h5disableFileLocking()
+```
+
+
+1. Create a list of all files and add names for each sample (these will be used
+as input for the ArrowFiles)
+
+```{r}
+
+```
+```{r}
+
+```
+
+
+```{r}
+# names of gastrulation stages
+stages <- c("E7.5_rep1", "E7.5_rep2", "E8.0_rep1", "E8.0_rep2", 
+ "E8.5_rep1", "E8.5_rep2", "E8.75_rep1", "E8.75_rep2")
+
+# combine all raw fragment files
+inputFiles <- setNames(c("raw_files/E7.5_rep1_atac_fragments.tsv.gz",
+                       "raw_files/E7.5_rep2_atac_fragments.tsv.gz",
+                       "raw_files/E8.0_rep1_atac_fragments.tsv.gz",
+                       "raw_files/E8.0_rep2_atac_fragments.tsv.gz",
+                       "raw_files/E8.5_rep1_atac_fragments.tsv.gz",
+                       "raw_files/E8.5_rep2_atac_fragments.tsv.gz",
+                       "raw_files/E8.75_rep1_atac_fragments.tsv.gz",
+                       "raw_files/E8.75_rep2_atac_fragments.tsv.gz"),
+                       c("E7.5_rep1", "E7.5_rep2", "E8.0_rep1", "E8.0_rep2", 
+                         "E8.5_rep1", "E8.5_rep2", "E8.75_rep1", "E8.75_rep2"))
+```
+
+
+2. Add Genome
+
+```{r}
+addArchRGenome("mm10")
+```
+
+
+3. Create Arrow files
+
+```{r}
+ArrowFiles <- createArrowFiles(
+  inputFiles = inputFiles,
+  sampleNames = names(inputFiles),
+  minTSS =2.75, #Dont set this too high because you can always increase later
+  minFrags = 1000, # minimum number of mapped fragments required
+  # count matrix, instead of using peak it uses fixed-width sliding window of bins across the whole genome
+  addTileMat = TRUE, 
+  addGeneScoreMat = TRUE, # uses signal proximal to the TSS to estimate gene activity
+  subThreading = FALSE,
+  maxFrags = 1e+07,
+  minFragSize = 10,
+  maxFragSize = 2000,
+  QCDir = "QualityControl",
+  force = FALSE, # change to TRUE if you want to ovewrite the files
+  # the length in bp that wraps around nucleosomes -> 
+    #identify fragments as sub-nucleosome spanning, mono-nucleosome spanning or multi-nucleosome spanning
+  nucLength = 147, 
+  # integer vector -> define region up/downstream of TSS to include as promoter region
+  # can be used to calculate e.g fraction of reads in promoter (FIP)
+  promoterRegion = c(2000, 100),
+  # parameters for computing TSS enrichment scores, window (bp) centered at TSS = 101
+  # flanking window = 2000 bp
+  # norm = size of flank window used for normalization = 100 bp
+  # accessibility within 101 bp surrounding the TSS will be normalized to accessibility
+  # in 100 bp bins from -2000:-1901bp and 1901: 2000
+  TSSParams = list(101, 2000, 100),
+  # which chromosomes to exclude form downstream analysis
+  # in human and mouse: mitochondrial DNA (chrM) and male sex chromosome (chrY)
+  # the fragments are still stored in the arrow files
+  excludeChr = c("chrM", "chrY"),
+  # number of chunks to divide chromosomes in -> low-memory parallelized reading of input files
+  nChunk = 5,
+  # name of field in input bam file containing the barcode tag information
+  bcTag = "qname",
+  offsetPlus = 4, # offset applied to + stranded Tn5 insertion -> account for precise Tn5 binding site
+  offsetMinus = -5, 
+  logFile = createLogFile("createArrows")
+)
+```
+
+### Compute doublet scores and remove cells
+
+```{r}
+# for each sample provided doublet information will be assigned to each cell
+# this way we can remove doublet-based clusters downstream
+doubScores <- addDoubletScores(
+  useMatrix = "TileMatrix",
+  input = ArrowFiles,
+  k = 10, #Refers to how many cells near a "pseudo-doublet" to count.
+  nTrial = 5, # number of time to simulate nCell doublets 
+  knnMethod = "UMAP", #Refers to the dimensionality reduciton method to use for nearest neighbor search.
+  LSIMethod = 1 # oder of normalization: tf-log(idf)
+)
+```
+
+### Create ArchR object
+
+```{r}
+proj <- ArchRProject(
+  ArrowFiles = ArrowFiles, 
+  outputDirectory = "gastrArchROutput",
+  copyArrows = TRUE, #This is recommened so that you maintain an unaltered copy for later usage.
+  geneAnnotation = getGeneAnnotation(),
+  #genomeAnnotation = getGeneAnnotation(),
+  showLogo = FALSE
+)
+
+```
+
+
+### Saving ArchR object
+
+```{r}
+saveArchRProject(ArchRProj = proj, outputDirectory = "")
+```
+
+
+### Loading ArchR object
+
+```{r}
+proj <- loadArchRProject("/")
+
+```
+
+
+
+# QC
+
+
+#### QC Plots
+
+
+```{r}
+metadata <- as.data.frame(getCellColData(proj))
+metadata %>% head
+
+metadata %>% group_by(Sample) %>% summarise(n = n())
+
+metadata %>% ggplot() +
+  geom_density2d_filled(aes(x = log10(nFrags), y = TSSEnrichment)) +
+  geom_hline(yintercept = 2.75, color="green", linetype="dashed") +
+  geom_vline(xintercept = log10(1000), color="green", linetype="dashed") +
+  #geom_xsidedensity(aes(x=log10(pre_filter_meta$nFrags))) +
+  #geom_ysidedensity(aes(y = pre_filter_meta$TSSEnrichment)) +
+  ylim(c(2.5, 4.5)) +
+  facet_wrap(~Sample) +
+  theme(legend.position = "none") +
+  labs(x = "Log10 Unique Fragments", y = "TSS Enrichment Score")
+```
+
+
+```{r}
+p1 <- as_data_frame(getCellColData(proj)) %>% 
+  mutate(Sample = str_remove(Sample, "scATAC_")) %>% 
+  ggplot() +
+  geom_density(aes(x = TSSEnrichment, fill = Sample), alpha = 0.8) 
+
+p2 <- as_data_frame(getCellColData(proj)) %>% 
+  mutate(Sample = str_remove(Sample, "scATAC_")) %>% 
+  ggplot() +
+  ggridges::geom_density_ridges(aes(x = TSSEnrichment, y = Sample,
+                                    fill = Sample), alpha = 0.8) +
+  theme(legend.position = "none")
+
+p3 <- as_data_frame(getCellColData(proj)) %>% 
+  mutate(Sample = str_remove(Sample, "scATAC_")) %>% 
+  ggplot() +
+  geom_violin(aes(x = Sample, y = TSSEnrichment, fill = Sample), alpha = 0.8) +
+  geom_boxplot(aes(x = Sample, y = TSSEnrichment,fill = Sample), alpha = 0.4) + 
+  theme(legend.position = "none") +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "none") +
+  labs(title = "TSS Enrichment")
+
+
+cowplot::plot_grid(p3, p2, p1, ncol = 3)
+```
+
+
+
+# Filtering doublets
+
+
+```{r}
+# in our case we now have 10 251 cells as opposed to 10 661 cells before
+# filtering -> 410 cells were removed (3.85%)
+proj <- filterDoublets(ArchRProj = proj)
+```
+
+
+# Create Pseudobulks
+
+
+
+```{r}
+proj <- addGroupCoverages(ArchRProj = proj, groupBy = "celltypes",
+                          force = FALSE)
+```
+
+
+# Peak calling
+
+```{r}
+pathToMacs2 <- findMacs2()
+
+```
+
+
+```{r}
+proj <- addReproduciblePeakSet(
+    ArchRProj = proj, 
+    groupBy = "celltypes",
+    pathToMacs2 = "/omics/groups/OE0533/internal/katharina/R_env/bin/macs2",
+    minCells = 25, # minimum allowable number of unique cells that was used to 
+    #create the coverage files on which peaks are called. Pseudo-bulk replicates 
+    #derived from very low cell numbers are excluded.
+    force = FALSE
+)
+```
+
+
+```{r}
+proj <- addPeakMatrix(ArchRProj = proj, 
+                      verbose = FALSE, 
+                      force = FALSE)
+```
+
+
+Have a look at the peaks:
+
+```{r}
+getAvailableMatrices(proj)
+
+peakMatrix <- getMatrixFromProject(ArchRProj = proj,
+                                   useMatrix = "PeakMatrix",
+                                   verbose = FALSE)
+
+
+peakset <- ArchR::getPeakSet(proj) %>%
+  tibble::as_tibble()
+print(paste0("Dimensions of the peak set are: ", paste(dim(peakset), collapse=", ")))
+```
+
+
+
+```{r}
+peakset %>%
+  glimpse()
+```
+
+
+```{r}
+peakset %>%
+  dplyr::count(peakType)
+```

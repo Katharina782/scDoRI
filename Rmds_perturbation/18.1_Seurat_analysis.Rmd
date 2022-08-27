@@ -1,0 +1,1061 @@
+---
+title: "Processed scRNA-seq & scATAC-seq of mouse gastrulation"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 5
+    code_folding: hide
+    toc_float: true
+    code_download: true
+    theme: cosmo
+    highlight: textmate
+---
+
+
+<style>
+body {
+text-align: justify}
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(cache = FALSE, autodep = TRUE, 
+                      collapse = TRUE, message = FALSE)
+knitr::opts_knit$set(root.dir = "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/")
+setwd("/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/")
+
+set.seed(1)
+```
+
+
+
+```{r}
+suppressPackageStartupMessages({
+library(knitr)
+library(tidyverse)
+library(Seurat)
+library(SeuratData)
+library(scater)
+library(zellkonverter)
+library(SingleCellExperiment)
+library(EnsDb.Mmusculus.v79)
+library(Signac)
+library(ArchR)
+})
+```
+
+```{r}
+plot_dir <- "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data_new/Kathi/plots/"
+```
+
+
+The dataset consists of multiome data (scATAC-seq & scRNA-seq) from cells at the 
+timepoints E7.5, E7.75, E8.0, E8.5, E8.75. Additionally, there is data from a 
+CRISPR Knockout of the transcription factor T which is important for the development
+of the mesoderm lineage. Lastly, there is a CRISPR wildtype sample as a control.  
+
+
+
+```{r, results = "asis"}
+rna_gastr_SE <- readRDS("/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data_new/processed/rna/SingleCellExperiment.rds")
+
+# convert to seurat object
+rna_seurat <- as.Seurat(rna_gastr_SE, counts = "counts", data = "counts")
+
+
+proj <- loadArchRProject("/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data_new/processed/atac/archR/")
+
+metadata <- getCellColData(proj)
+
+metadata %>% as.data.frame() %>%
+  group_by(sample) %>%
+  summarise(n = n()) %>% knitr::kable()
+
+metadata <- metadata %>% as.data.frame() %>% 
+  dplyr::filter(!is.na(celltype.mapped)) %>%
+  rownames_to_column("cell") %>%
+  dplyr::filter(cell %in% colnames(rna_seurat)) %>%
+  column_to_rownames("cell")
+
+rna_seurat <- rna_seurat[, rownames(metadata)]
+
+rna_seurat <- AddMetaData(rna_seurat, metadata)
+
+
+rm(rna_gastr_SE)
+rm(proj)
+gc(reset = TRUE)
+```
+
+
+```{r}
+atac_peaks <- readH5AD("/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data_new/processed/atac/anndata/PeakMatrix/PeakMatrix_anndata.h5ad")
+
+
+atac_seurat <- as.Seurat(atac_peaks, counts = "X", data = "X")
+
+
+rna_seurat <- readRDS("/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data_new/Kathi/rna_seurat")
+
+
+rm(atac_peaks)
+#rm(atac_gene_scores)
+gc(reset = TRUE)
+
+```
+
+# scRNA-seq
+
+## Quality Control
+
+
+### Empty Droplets
+
+```{r}
+
+tibble(sample = rna_seurat@meta.data$sample, umi_per_cell = Matrix::colSums(rna_seurat@assays$RNA@counts)) %>% 
+  arrange(sample, desc(umi_per_cell)) %>% 
+  group_by(sample) %>% 
+  mutate(idx = seq_along(sample)) %>% 
+  mutate(cum_umi_per_cell = cumsum(umi_per_cell)) %>% 
+  ggplot() +
+  geom_line(aes(x = idx, y = cum_umi_per_cell)) +
+  facet_wrap(~sample, scales = "fixed") +
+  scale_y_log10() + scale_x_log10() +
+  ylab("cumulative UMI count") +
+  xlab("index")
+
+
+```
+
+
+
+From the plots below it seems that all cells with percentage of mitochondrial 
+genes above 40% were removed. The early time points E7.5rep1/2 have the highest
+percentage of mitochondrial genes. Especially E7.5 rep2 seems to have a higher 
+percentage of mitochondrial genes. Conversely, the same replicates from E7.5 
+have a lower number of features and counts. This means that the E7.5 rep2 and to
+a lesser extent E7.5 rep1 are of lower quality compared to the other samples. E8.75 
+rep1/rep2 seem to have the highest quality. 
+
+
+```{r, fig.width=15, fig.height=10}
+#rename metadata
+
+variables <- c("nFeature_RNA", "nCount_RNA", "mitochondrial_percent_RNA", "ribosomal_percent_RNA")
+plots <- map(variables, function(n){
+  df <- rna_seurat@meta.data %>%
+    arrange(sample) 
+  plot <- ggplot(df) +
+    geom_violin(aes(x = df %>% pull("sample"), y = df %>% pull(n),
+                     fill = df %>% pull("sample")), alpha = .9) +
+    geom_boxplot(aes(x = df %>% pull("sample"), y = df %>% pull(n),
+                     fill = df %>% pull("sample")), alpha = .2) +
+    scale_fill_brewer(palette="Set3") +
+    xlab("sample") +
+    ylab(paste0(n)) +
+    labs(title = paste0(n)) +
+    guides(fill=guide_legend(title="sample")) +
+    theme(
+        axis.text.y = element_text(size = 15),
+        axis.title.y = element_text(size = 20),
+        plot.title = element_text(hjust = 0.5, size = 25),
+        axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1, size =15),
+          legend.position = "None", 
+          panel.grid.major = element_line(colour = "grey"),   # Major grid lines
+          #strip.background = element_rect(colour = "black", fill = "white"),
+          panel.background = element_rect(fill = "white", colour = "black"))
+  print(plot)
+  ggsave(paste0(plot_dir, "_", n, "_qc.pdf"))
+  print(plot)
+
+})
+
+print(gridExtra::grid.arrange(grobs = plots, ncol = 2))
+
+
+
+```
+
+## Celltypes
+
+```{r}
+print(paste0("There are ", length(unique(rna_seurat@meta.data$celltype.mapped)), " celltypes in the dataset"))
+```
+
+
+<details> 
+<summary>Table with number of cells per celltype</summary>
+
+```{r}
+rna_seurat@meta.data %>% group_by(celltype.mapped) %>% 
+  summarise(n = n()) %>% knitr::kable(caption = "Number of cells for each celltypes")
+```
+
+</details>
+
+
+```{r}
+colPalette_celltypes = c('#532C8A',
+ '#c19f70',
+ '#f9decf',
+ '#c9a997',
+ '#B51D8D',
+ '#3F84AA',
+ '#9e6762',
+ '#354E23',
+ '#F397C0',
+ '#ff891c',
+ '#635547',
+ '#C72228',
+ '#f79083',
+ '#EF4E22',
+ '#989898',
+ '#7F6874',
+ '#8870ad',
+ '#647a4f',
+ '#EF5A9D',
+ '#FBBE92',
+ '#139992',
+ '#cc7818',
+ '#DFCDE4',
+ '#8EC792',
+ '#C594BF',
+ '#C3C388',
+ '#0F4A9C',
+ '#FACB12',
+ '#8DB5CE',
+ '#1A1A1A',
+ '#C9EBFB',
+ '#DABE99',
+ '#65A83E',
+ '#005579',
+ '#CDE088',
+ '#f7f79e',
+ '#F6BFCB')
+
+
+celltypes <- (rna_seurat@meta.data %>% arrange(celltype.mapped) %>%
+                group_by(celltype.mapped) %>% 
+  summarise(n = n()))$celltype.mapped
+
+
+celltypes
+
+col <- setNames(colPalette_celltypes, celltypes)
+col["PGC"] <- "#FACB12"
+col["Paraxial_mesoderm"] <- "#8DB5CE"
+col["Parietal_endoderm"] <- "#1A1A1A" 
+col["Neural_crest"] <- "#C3C388"
+col["NMP"] <- "#8EC792"
+col["Nascent_mesoderm"] <- "#C594BF"
+
+
+#celltypes <- (rna_seurat@meta.data %>% group_by(celltype.mapped) %>% 
+ # summarise(n = n()))$celltype.mapped
+
+#col <- setNames(colPalette_celltypes, celltypes)
+```
+
+
+```{r, fig.width=10, fig.height=6}
+
+rna_seurat@meta.data %>% group_by(celltype.mapped) %>% 
+  summarise(n = n()) %>%# knitr::kable(caption = "Number of cells for each celltypes")
+  ggplot() + 
+  geom_bar(aes (x = celltype.mapped, y = n,
+                fill = celltype.mapped), stat = "identity") +
+  scale_fill_manual(values = col) +
+  labs(title = "Number of cells per celltype", y = "number of cells", x = "celltype") +
+  theme(axis.text.x = element_text(angle = 90, hjust=1, size = 12),
+        axis.text.y = element_text(size = 12),
+        axis.title.x = element_blank(), # change size of axis title
+        axis.title.y = element_text(size = 20),
+        plot.title = element_text(hjust = 0.5, size = 25),
+        legend.position = "None", 
+        panel.grid.major = element_line(colour = "grey"),   # Major grid lines
+        panel.background = element_rect(fill = "white", colour = "black"),
+        aspect.ratio = 0.4)
+
+ggsave(paste0(plot_dir, "celltypes.pdf"))
+
+rna_seurat@meta.data %>% group_by(sample) %>% 
+  summarise(n = n()) %>%# knitr::kable(caption = "Number of cells for each celltypes")
+  ggplot() + 
+  geom_bar(aes (x = sample, y = n,
+                fill = sample), stat = "identity") +
+  scale_fill_brewer(palette="Set3") +
+  labs(title = "Number of cells per sample", y = "number of cells", x = "sample") +
+  theme(axis.text.x = element_text(angle = 45, hjust=1, size = 15),
+        axis.text.y = element_text(size = 15),
+        axis.title.x = element_blank(), # change size of axis title
+        axis.title.y = element_text(size = 20),
+        plot.title = element_text(hjust = 0.5, size = 25),
+      legend.position = "None", 
+      panel.grid.major = element_line(colour = "grey"),   # Major grid lines
+      panel.background = element_rect(fill = "white", colour = "black"),
+      aspect.ratio = 0.4)
+
+ggsave(paste0(plot_dir, "samples.pdf"))
+```
+
+
+
+## Normalize & Scale
+
+
+
+```#{r}
+gc(reset = TRUE)
+rna_seurat <- rna_seurat %>% 
+  NormalizeData(verbose = FALSE) %>% 
+  ScaleData(verbose = FALSE) %>%
+  FindVariableFeatures(verbose = FALSE)
+
+#gastr_seurat@assays$RNA@data[0:10, 0:10]
+```
+
+
+### PCA
+
+I will proceed with 15 PCs.
+
+```{r}
+rna_seurat <- RunPCA(rna_seurat, features = VariableFeatures(rna_seurat),
+             verbose = FALSE)
+
+ElbowPlot(rna_seurat)
+```
+
+```{r}
+pca_plots <- comprehenr::to_list(for (i in 1:15)
+  DimPlot(rna_seurat, reduction = "pca", dims = i:(i+1)) +
+    theme())
+
+#pca_plots
+#gridExtra::grid.arrange(unlist(pca_plots), ncol = 3, nrow = 5)
+
+```
+
+## Clustering
+
+Trying a different resolution for the clustering to see if the Mesenchyme will 
+still separate.
+
+```#{r}
+rna_seurat <- FindNeighbors(rna_seurat, verbose = FALSE)
+rna_seurat <- FindClusters(rna_seurat, verbose = FALSE, resolution = 0.6)
+rna_seurat <- RunUMAP(rna_seurat, verbose = FALSE, dims = 1:15)
+```
+
+
+## Visualization
+
+
+
+
+There are two possibilities to proceed with celltype annotations:
+
+
+In the plot below you can see that the Mesenchyme separates into two clusters, as
+well as the gut and hematoendothelial progenitors,
+even though the cells belong to the same celltype. Therefore I visualized the 
+Mesenchyme cells and gut cells according to their respective time point and replicate below. It 
+becomes evident that the Mesenchyme separate into E7.5 and E8.0, E8.5, E8.75. Therefore,
+the separation is probably a batch effect corresponding to different signatures 
+at different time points. This could also be due to biological differences, however, 
+we should keep in mind that E7.5 was also the
+time point with lowest quality of cells. 
+
+There is one cluster which contains a very heterogeneous population of cells,
+namely mixed & nascent mesoderm, caudal & rostral neuroectoderm, primitive streak, 
+caudal epiblast and epiblast. As we will see later on, these are primarily early celltypes
+found at E7.5, which are not present at later timepoints anymore.
+
+```{r}
+# add umap coordinates to metadata for plotting
+metadata <- rna_seurat@meta.data
+metadata <- metadata %>% mutate(umap1 = rna_seurat[["umap"]]@cell.embeddings[, 1], 
+                    umap2 = rna_seurat[["umap"]]@cell.embeddings[, 2])
+```
+
+
+```{r, fig.width=10, fig.height=6}
+
+metadata %>% 
+ggplot() +
+geom_point(aes(x = umap1, y = umap2, 
+               col = celltype.mapped),  size = .6) +
+  guides(col=guide_legend(title="Celltype", override.aes = list(size = 5))) +
+  scale_color_manual(values = col)+
+  xlab("UMAP1") +
+  ylab("UMAP2") +
+  theme(axis.title.x = element_text(size = 15), # change size of axis title
+        axis.title.y = element_text(size = 15), # change size of axis title
+        legend.title = element_text(size=15), # change siez of legend title
+        legend.text = element_text(size=12), # change size of legend text
+        panel.background = element_rect(fill = "white", colour = "black"), # make background white
+        legend.key = element_rect(fill = NA), # remove background fill in legend
+        aspect.ratio = 1) # make plot quadratic
+
+
+ggsave(paste0(plot_dir, "celltype_pca.pdf"))
+```
+
+
+
+```{r,fig.width=10, fig.height=6}
+metadata %>% 
+ggplot() +
+geom_point(aes(x = umap1, y = umap2, 
+               col = sample),  size = .4) +
+  guides(col=guide_legend(title="Sample", override.aes = list(size = 5))) +
+  #scale_color_brewer(palette="Set3") +
+  xlab("UMAP1") +
+  ylab("UMAP2") +
+  theme(axis.title.x = element_text(size = 15),
+        axis.title.y = element_text(size = 15),
+        legend.title = element_text(size=15),
+        panel.background = element_rect(fill = "white", colour = "black"),
+        legend.text = element_text(size=12),
+        legend.key = element_rect(fill = NA),
+        aspect.ratio = 1)
+
+ggsave(paste0(plot_dir, "sample_pca.pdf"))
+
+```
+
+```{r,fig.width=10, fig.height=6}
+metadata %>% 
+ggplot() +
+geom_point(aes(x = umap1, y = umap2, 
+               col = ribosomal_percent_RNA),  size = .4) +
+  guides(col=guide_legend(title="% Ribosomal genes", 
+                          override.aes = list(size = 5))) +
+  scale_color_viridis_c() +
+  xlab("UMAP1") +
+  ylab("UMAP2") +
+  theme(axis.title.x = element_text(size = 15),
+        axis.title.y = element_text(size = 15),
+        legend.title = element_text(size=15),
+        panel.background = element_rect(fill = "white", colour = "black"),
+        legend.text = element_text(size=12),
+        legend.key = element_rect(fill = NA),
+        aspect.ratio = 1)
+
+ggsave(paste0(plot_dir, "ribosomal_pca.pdf"))
+
+```
+
+```{r,fig.width=10, fig.height=6}
+metadata %>% 
+ggplot() +
+geom_point(aes(x = umap1, y = umap2, 
+               col = mitochondrial_percent_RNA),  size = .4) +
+  guides(col=guide_legend(title="% Mitochondrial genes", 
+                          override.aes = list(size = 5))) +
+  scale_color_viridis_c() +
+  xlab("UMAP1") +
+  ylab("UMAP2") +
+  theme(axis.title.x = element_text(size = 15),
+        axis.title.y = element_text(size = 15),
+        legend.title = element_text(size=15),
+        panel.background = element_rect(fill = "white", colour = "black"),
+        legend.text = element_text(size=12),
+        legend.key = element_rect(fill = NA),
+        aspect.ratio = 1)
+
+ggsave(paste0(plot_dir, "mitochondrial_pca.pdf"))
+
+```
+
+
+```{r,fig.width=10, fig.height=6}
+metadata %>% 
+ggplot() +
+geom_point(aes(x = umap1, y = umap2, 
+               col = nCount_RNA),  size = .4) +
+  guides(col=guide_legend(title="#Counts", override.aes = list(size = 5))) +
+  scale_color_viridis_c() +
+  xlab("UMAP1") +
+  ylab("UMAP2") +
+  theme(axis.title.x = element_text(size = 15),
+        axis.title.y = element_text(size = 15),
+        legend.title = element_text(size=15),
+        panel.background = element_rect(fill = "white", colour = "black"),
+        legend.text = element_text(size=12),
+        legend.key = element_rect(fill = NA),
+        aspect.ratio = 1)
+
+ggsave(paste0(plot_dir, "counts_pca.pdf"))
+
+```
+
+```{r,fig.width=10, fig.height=6}
+metadata %>% 
+ggplot() +
+geom_point(aes(x = umap1, y = umap2, 
+               col = nFeature_RNA),  size = .4) +
+  guides(col=guide_legend(title="#Features", 
+                          override.aes = list(size = 5))) +
+  scale_color_viridis_c() +
+  xlab("UMAP1") +
+  ylab("UMAP2") +
+  theme(axis.title.x = element_text(size = 15),
+        axis.title.y = element_text(size = 15),
+        legend.title = element_text(size=15),
+        panel.background = element_rect(fill = "white", colour = "black"),
+        legend.text = element_text(size=12),
+        legend.key = element_rect(fill = NA),
+        aspect.ratio = 1)
+
+ggsave(paste0(plot_dir, "features_pca.pdf"))
+
+```
+
+```{r, fig.width=15, fig.height = 10}
+DimPlot(rna_seurat, reduction = "umap", pt.size = 1, 
+        group.by = "celltype.mapped", cols = col) #, label = TRUE, repel = TRUE) +
+```
+
+
+```{r, fig.width=15, fig.height=15}
+p1 <- DimPlot(subset(rna_seurat, celltype.mapped == "Mesenchyme"), 
+        group.by = "sample") + labs(title = "Mesenchyme")
+#ggsave(paste0(plot_dir, "mesenchyme1.pdf"), p1)
+p2 <- DimPlot(subset(rna_seurat, celltype.mapped == c("Gut", "Visceral_endoderm", "Def._endoderm")), 
+        group.by = "sample") + labs(title = "Gut, Visceral endoderm, Definitive endoderm")
+#ggsave(paste0(plot_dir, "mesenchyme2.pdf"), p2)
+
+
+p3 <-  DimPlot(subset(rna_seurat, celltype.mapped == "Mesenchyme"), 
+        group.by = "celltype.mapped") + labs(title = "Mesenchyme")
+#ggsave(paste0(plot_dir, "mesenchyme3.pdf"), p3)
+
+
+p4 <-  DimPlot(subset(rna_seurat, celltype.mapped == c("Gut", "Visceral_endoderm", "Def._endoderm")), 
+        group.by = "celltype.mapped") + labs(title = "Gut, Visceral endoderm, Definitive endoderm")
+#ggsave(paste0(plot_dir, "mesenchyme4.pdf"), p4)
+
+
+cowplot::plot_grid(p1, p2, p3, p4, ncol = 2)
+ggsave(paste0(plot_dir, "mesenchyme.pdf"), width = 15, height = 15)
+
+```
+
+
+```{r,fig.width=20, fig.height=10}
+
+p1 <- DimPlot(subset(rna_seurat, celltype.mapped == "Mesenchyme"), 
+        split.by  = "sample")
+
+p2 <- DimPlot(subset(rna_seurat, celltype.mapped == c("Gut", "Visceral_endoderm", "Def._endoderm")), 
+        split.by  = "sample")
+
+cowplot::plot_grid(p1, p2, ncol = 1)
+
+ggsave(paste0(plot_dir, "mesenchyme_split.pdf"))
+
+```
+
+
+
+
+Clustering by Seurat with resolution = 0.6 yields 18 distinct clusters, not enough
+to differentiate the large number of different celltypes in this dataset.
+
+```{r}
+DimPlot(rna_seurat, reduction = "umap", pt.size = .1, 
+        group.by = "seurat_clusters", label = TRUE) +
+  NoLegend()
+```
+
+Below, you can see how the earlier time points separate from the later time 
+points. The number of counts is very homogenous, while the mitochondrial RNA 
+percentage is higher and the number of features lower for E7.5 as already pointed out.
+
+```{r, fig.width=15, fig.height=10}
+p1 <- DimPlot(rna_seurat, reduction = "umap", pt.size = .1, group.by = "sample")
+
+p2 <- FeaturePlot(rna_seurat, reduction = "umap", pt.size = .1,
+            features = "nCount_RNA") +
+    scale_color_viridis_c() 
+p3 <- FeaturePlot(rna_seurat, reduction = "umap", pt.size = .1, features = "mitochondrial_percent_RNA") +
+    scale_color_viridis_c() 
+
+p4 <- FeaturePlot(rna_seurat, reduction = "umap", pt.size = .1, features = "nFeature_RNA") +
+    scale_color_viridis_c() 
+
+gridExtra::grid.arrange(p1, p2, p3, p4, ncol = 2, nrow = 2)
+
+
+```
+
+
+## Distribution of celltypes at different time points
+
+
+Visualizing the cells at each timepoint in separate UMAPs shows how the
+distribution of celltypes changes as gastrulation proceeds. The heterogenous 
+cell cluster present at E7.5 disappears at later time points. We can also see how
+no Erythroids are present at E7.5,
+Erythroid1 (and to lesser extend Erythroid2 and 3) appear at E8.0, while Eryhtroid3 
+are found to a higher extent
+at E8.75, which indicates that these cells correspond to different developmental 
+stages. 
+
+```{r, fig.width=15, fig.height=20}
+DimPlot(rna_seurat, reduction = "umap", pt.size = 1, 
+        group.by = "celltype.mapped", split.by = "orig.ident", ncol = 1, cols = col) +
+  labs(title = "Celltypes at different time points")
+
+
+ggsave(paste0(plot_dir, "celltypes_timepoints.pdf"), width = 15, height = 20)#, dpi = 300)
+
+```
+
+
+```{r, fig.width=15, fig.height=20}
+p1 <- DimPlot(subset(rna_seurat, sample %in% c("E8.5_rep1", "E8.5_rep2", "E8.5_CRISPR_T_KO", "E8.5_CRISPR_T_WT")), 
+        group.by = "celltype.mapped", split.by = "sample", ncol = 1, cols = col, pt.size = 1)
+p1
+```
+
+
+
+
+We can see that nascent mesoderm, epiblast and primitive streak are only present 
+at E7.5 and E7.75. Also, extraembryonice endoderm and ectoderm are highest and decrease 
+with progressing gastrulation. Forebrain/Midbrain/Hindbrain, neural crest and 
+neuromesodermal progenitor (NMP) cells are not present at 
+E7.5, but emerge at E8.0 and are present at even higher percentage at E8.5. Also,
+the endothelium appears only at E8.0. The 
+same is true for Allantois, erythroids (produce red blood cells, remain in bone
+marrow) and cardiomyocytes.  Conversely, the number
+of extraembryonic ectoderm cells and extraembryonic endoderm). Similar results
+were seen in a scRNA-seq dataset [@Pijuan2019]
+
+
+```{r, fig.width=10, fig.height=6}
+# 
+# pal <- c("#FACB12", "#F6BFCB", "#B51D8D", "#65A83E","#0F4A9C")
+# # plot the frequency of each cell type at each embryonic stage
+# # all frequencies for one embryonic stage would add up to 0
+# rna_seurat@meta.data %>%
+#   #group_by(orig.ident, celltype.mapped) %>% 
+#   #summarise(Total = n()) %>% 
+#   #mutate(freq = Total/sum(Total)) %>% 
+#   ggplot(aes(x = celltype.mapped, fill = orig.ident), alpha =.7) +
+#   geom_bar(position = "fill") +
+#   #scale_fill_manual(values = pal) +
+#   #theme(axis.text.x = element_text(angle = 45, vjust = 0.8, hjust=1)) +
+#   scale_fill_brewer(palette="Set3") +
+#   guides(fill=guide_legend(title="timepoint")) +
+#   #scale_fill_brewer(palette="Set3") +
+#   labs(y = "percentage", x = "celltype") +
+#   theme(axis.text.x = element_text(angle = 45, hjust=1, size = 12),
+#         axis.text.y = element_text(size = 15),
+#         axis.title.x = element_blank(), # change size of axis title
+#         axis.title.y = element_text(size = 20),
+#         plot.title = element_text(hjust = 0.5, size = 25),
+#         legend.title = element_text(size = 12),
+#       panel.grid.major = element_line(colour = "grey"),   # Major grid lines
+#       panel.background = element_rect(fill = "white", colour = "black"),
+#       aspect.ratio = 0.4)
+#   
+#   
+# ggsave(paste0(plot_dir, "celltypes_timepoints_percentage.pdf"))
+#  
+#   
+  
+# rna_seurat@meta.data %>%
+#   group_by(orig.ident, celltype.mapped) %>% 
+#   summarise(Total = n()) %>% 
+#   mutate(freq = Total/sum(Total)) %>% 
+#   ggplot(aes(x = celltype.mapped, y = freq, fill = orig.ident)) +
+#   geom_bar(position = "dodge", stat = "identity", alpha = .7) +
+#   scale_fill_manual(values = pal) +
+#   theme(axis.text.x = element_text(angle = 45, vjust = 0.8, hjust=1)) 
+```
+
+
+```{r, fig.width=10, fig.height=6}
+rna_seurat@meta.data %>%
+  group_by(celltype.mapped) %>%
+  dplyr::count(orig.ident) %>%
+  mutate(total = sum(n), fracs = n/total) %>%
+  filter(orig.ident=="E7.5") %>%
+  arrange(desc(fracs)) %>%
+  pull(celltype.mapped) -> seq
+
+
+rna_seurat@meta.data %>%
+  mutate(celltype.mapped = factor(celltype.mapped, levels=seq)) %>%
+  ggplot(aes(x = celltype.mapped, fill = orig.ident), alpha =.7) +
+  geom_bar(position = "fill") +
+  scale_fill_brewer(palette="Set3") +
+  #theme(axis.text.x = element_text(angle = 45, vjust = 0.8, hjust=0.75)) +
+  guides(fill=guide_legend(title="timepoint")) +
+  labs(y = "percentage", x = "celltype") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.8, hjust=1,  size = 12),
+        axis.text.y = element_text(size = 12),
+        axis.title.x = element_blank(), # change size of axis title
+        axis.title.y = element_text(size = 20),
+        plot.title = element_text(hjust = 0.5, size = 25),
+        legend.title = element_text(size = 12),
+      panel.grid.major = element_line(colour = "grey"),   # Major grid lines
+      panel.background = element_rect(fill = "white", colour = "black"),
+      aspect.ratio = 0.4)
+
+
+ggsave(paste0(plot_dir, "celltypes_timepoints_percentage.pdf"))
+
+```
+
+
+```{r}
+
+factor_E7.5 <- rna_seurat@meta.data %>% 
+  group_by(orig.ident, celltype.mapped) %>% 
+  summarise(Total = n()) %>% 
+  ungroup () %>% 
+  mutate(freq = Total/sum(Total)) %>% 
+  filter(orig.ident == "E7.5") %>% 
+  arrange(desc(freq)) %>% 
+  pull(celltype.mapped)
+
+
+library(tidyverse)
+df%>%
+  group_by(day,hour)%>%
+  mutate("t1%"=t1/sum(t1),"t2%"=t2/sum(t2))
+
+ mutate("t1%"=t1/sum(t1),"t2%"=t2/sum(t2))
+
+mutate(name=factor(name, levels=name)) 
+
+rna_seurat@meta.data %>%
+  #mutate(orig.ident = factor(orig.ident, levels = factor))
+  #group_by(orig.ident, celltype.mapped) %>% 
+  #summarise(Total = n()) %>% 
+  #mutate(freq = Total/sum(Total)) %>% 
+  ggplot(aes(x = celltype.mapped, fill = orig.ident), alpha =.7) +
+  geom_bar(position = "fill", ) +
+  #scale_fill_manual(values = pal) +
+  #theme(axis.text.x = element_text(angle = 45, vjust = 0.8, hjust=1)) +
+  scale_fill_brewer(palette="Set3") +
+  guides(fill=guide_legend(title="timepoint")) +
+  scale_x_discrete(limits = seq) +
+  #scale_fill_brewer(palette="Set3") +
+  labs(y = "percentage", x = "celltype") +
+  theme(axis.text.x = element_text(angle = 45, hjust=1, size = 12),
+        axis.text.y = element_text(size = 15),
+        axis.title.x = element_blank(), # change size of axis title
+        axis.title.y = element_text(size = 20),
+        plot.title = element_text(hjust = 0.5, size = 25),
+        legend.title = element_text(size = 12),
+      panel.grid.major = element_line(colour = "grey"),   # Major grid lines
+      panel.background = element_rect(fill = "white", colour = "black"),
+      aspect.ratio = 0.4)
+  
+```
+
+
+
+
+<details> 
+<summary>Save Seurat object</summary>
+
+```{r}
+#saveRDS(rna_seurat, "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data_new/Kathi/rna_seurat")
+
+#rna_seurat <- readRDS("/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data_new/Kathi/rna_seurat")
+
+#sce <- as.SingleCellExperiment(rna_seurat, assay = "RNA")
+
+
+#writeH5AD(sce, "/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data_new/Kathi/rna_anndata_from_seurat", X_name = "counts")
+```
+
+</details>
+
+
+
+## Marker genes of erythroid lineage cells
+
+```#{r}
+markers <- FindAllMarkers(rna_seurat, only.pos = TRUE,
+               min.pct = .25, logfc.threshold = .25)
+
+```
+
+
+
+
+# scATAC-seq data
+
+
+## QC ATAC
+
+
+```{r}
+proj <- loadArchRProject("/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data_new/Kathi/01_original_subset/")
+
+metadata <- getCellColData(proj) %>% as.data.frame()
+```
+
+
+
+```{r}
+metadata %>%
+  ggplot() +
+  geom_density2d_filled(aes(x=log10(nFrags_atac ), y=TSSEnrichment_atac), bins=20) +
+  geom_hline(yintercept = 5, color="green", linetype="dashed") +
+  geom_vline(xintercept = 3, color="green", linetype="dashed") +
+  #geom_xsidedensity(aes(x=log10(pre_filter_meta$nFrags))) +
+  #geom_ysidedensity(aes(y = pre_filter_meta$TSSEnrichment)) +
+  facet_wrap(~sample) +
+  theme(legend.position = "none") +
+  labs(x = "Log10 Unique Fragments", y = "TSS Enrichment Score")
+```
+
+The scATAC-seq shows that E7.5 seems to be of lower quality, which we have already
+observed in the scRNA-seq. Potentially, the cells where simply in a worse 
+condition when sequenced.
+
+```{r, fig.width=10}
+p1 <- metadata %>% 
+  ggplot() +
+  ggridges::geom_density_ridges(aes(x = TSSEnrichment_atac, y = Sample, fill = Sample),
+                                alpha = .9) +
+  scale_fill_brewer(palette="Set3") +
+  theme(
+      plot.title = element_text(hjust = 0.5),
+      legend.position = "None", 
+      panel.grid.major = element_line(colour = "grey"),   # Major grid lines
+      #strip.background = element_rect(colour = "black", fill = "white"),
+      panel.background = element_rect(fill = "white", colour = "black"))
+  
+
+p2 <- metadata %>% 
+  ggplot() +
+  geom_violin(aes(x = Sample, y = TSSEnrichment, fill = Sample), alpha = 0.9) +
+  geom_boxplot(aes(x = Sample, y = TSSEnrichment,fill = Sample), alpha = 0.2) + 
+  theme(legend.position = "none") +
+  labs(title = "TSS Enrichment") +
+  scale_fill_brewer(palette="Set3") +
+  guides(fill=guide_legend(title="sample")) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        plot.title = element_text(hjust = 0.5),
+        legend.position = "None", 
+        panel.grid.major = element_line(colour = "grey"),   # Major grid lines
+        #strip.background = element_rect(colour = "black", fill = "white"),
+        panel.background = element_rect(fill = "white", colour = "black"))
+  
+
+cowplot::plot_grid(p2, p1, ncol = 2)
+
+```
+
+<details>
+<summary>Plots for report</summary>
+
+```{r, fig.width=15, fig.height=10}
+
+p1 <- metadata %>% 
+  ggplot() +
+  geom_violin(aes(x = Sample, y = TSSEnrichment, fill = Sample), alpha = 0.9) +
+  geom_boxplot(aes(x = Sample, y = TSSEnrichment,fill = Sample), alpha = 0.2) + 
+  theme(legend.position = "none") +
+  labs(title = "TSS Enrichment") +
+  scale_fill_brewer(palette="Set3") +
+  guides(fill=guide_legend(title="sample")) +
+  labs(title = "Number of unique Fragments", y = "#Fragments") +
+  scale_fill_brewer(palette="Set3") +
+  guides(fill=guide_legend(title="sample")) +
+  theme(
+      axis.text.y = element_text(size = 20),
+      axis.title.y = element_text(size = 20),
+      plot.title = element_text(hjust = 0.5, size = 25),
+      axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1, size =15),
+        legend.position = "None", 
+        panel.grid.major = element_line(colour = "grey"),   # Major grid lines
+        #strip.background = element_rect(colour = "black", fill = "white"),
+        panel.background = element_rect(fill = "white", colour = "black"))
+
+
+p2 <- metadata %>% 
+  ggplot() +
+  geom_violin(aes(x = Sample, y = nFrags_atac , fill = Sample), alpha = 0.6) +
+  geom_boxplot(aes(x = Sample, y = nFrags_atac ,fill = Sample), alpha = 0.1) + 
+  theme(legend.position = "none") +
+  labs(title = "Number of unique Fragments", y = "#Fragments") +
+  scale_fill_brewer(palette="Set3") +
+  guides(fill=guide_legend(title="sample")) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1, size = 15),
+        axis.text.y = element_text(size = 20),
+        axis.title.y = element_text(size = 20),
+        plot.title = element_text(hjust = 0.5, size = 25),
+        legend.position = "None", 
+        panel.grid.major = element_line(colour = "grey"),   # Major grid lines
+        #strip.background = element_rect(colour = "black", fill = "white"),
+        panel.background = element_rect(fill = "white", colour = "black"))
+
+  
+
+cowplot::plot_grid(p1, p2, ncol = 2)
+
+ggsave(paste0(plot_dir, "qc_atac_tss.pdf"), p1, width = 15, height = 10)
+ggsave(paste0(plot_dir, "qc_atac_frag.pdf"), p2, width = 15, height = 10)
+
+
+```
+
+
+
+```{r}
+metadata %>% 
+  ggplot() +
+  geom_violin(aes(x = Sample, y = nFrags_atac , fill = Sample), alpha = 0.6) +
+  geom_boxplot(aes(x = Sample, y = nFrags_atac ,fill = Sample), alpha = 0.1) + 
+  theme(legend.position = "none") +
+  labs(title = "Number of unique Fragments", y = "#Fragments") +
+  scale_fill_brewer(palette="Set3") +
+  guides(fill=guide_legend(title="sample")) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        plot.title = element_text(hjust = 0.5),
+        legend.position = "None", 
+        panel.grid.major = element_line(colour = "grey"),   # Major grid lines
+        #strip.background = element_rect(colour = "black", fill = "white"),
+        panel.background = element_rect(fill = "white", colour = "black"))
+
+```
+
+
+</details>
+
+```{r, fig.width=10}
+p1 <- atac_seurat@meta.data %>% 
+  ggplot() +
+  ggridges::geom_density_ridges(aes(x = nFrags_atac , y = Sample, fill = Sample),
+                                alpha = .6) +
+  scale_fill_brewer(palette="Set3") +
+  theme(
+    plot.title = element_text(hjust = 0.5),
+    legend.position = "None", 
+    panel.grid.major = element_line(colour = "grey"),   # Major grid lines
+    #strip.background = element_rect(colour = "black", fill = "white"),
+    panel.background = element_rect(fill = "white", colour = "black"))
+
+p2 <- atac_seurat@meta.data %>% 
+  ggplot() +
+  geom_violin(aes(x = Sample, y = nFrags_atac , fill = Sample), alpha = 0.6) +
+  geom_boxplot(aes(x = Sample, y = nFrags_atac ,fill = Sample), alpha = 0.1) + 
+  theme(legend.position = "none") +
+  labs(title = "Number of unique Fragments") +
+  scale_fill_brewer(palette="Set3") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        plot.title = element_text(hjust = 0.5),
+        legend.position = "None", 
+        panel.grid.major = element_line(colour = "grey"),   # Major grid lines
+        #strip.background = element_rect(colour = "black", fill = "white"),
+        panel.background = element_rect(fill = "white", colour = "black"))
+cowplot::plot_grid(p2, p1, ncol = 2)
+```
+
+## Normalization & Dimensionality reduction ATAC
+
+**Latent Semantic Indexing**
+
+1. TF-IDF normalization
+  + normalize across cells (sequencing depth)
+  + normalize across peak (higher values to more rare peaks)
+2. Select Top features
+3.  Run SVD on selected features
+
+```#{r}
+colSums(atac_seurat@assays$originalexp@data)
+
+atac_seurat <- RunTFIDF(atac_seurat)
+atac_seurat <- FindTopFeatures(atac_seurat)
+atac_seurat <- RunSVD(atac_seurat)
+```
+The first LSI component often captures sequencing depth. We will
+therefore remove it from downstream analysis. The correlation between sequencing
+depth and each LSI component is shown in the plot below.
+
+```#{r}
+DepthCor(atac_seurat)
+```
+
+## Visualization
+
+```#{r}
+atac_seurat <- RunUMAP(atac_seurat, reduction = "lsi", dims = 2:30, verbose = FALSE)
+aatac_seurat <- FindNeighbors(atac_seurat, reduction = "lsi", dims = 2:30, verbose = FALSE)
+
+# for Clsutering instead of Louvian SLM algorithm is used
+#atac_seurat <- FindClusters(atac_seurat, verbose = FALSE, algorithm = 3) 
+```
+
+
+
+```#{r, fig.width = 15, fig.height=10}
+
+DimPlot(atac_seurat, group.by = "celltype.mapped_seurat", reduction = "umap", pt.size = 1, cols = col) +
+  labs(title = "scATAC-seq Celltype")
+  
+DimPlot(atac_seurat, group.by = "sample", reduction = "umap", pt.size = 1, cols = col) +
+  labs(title = "scATAC-seq Celltype")
+```
+
+```#{r, fig.width=15, fig.height=10}
+DimPlot(rna_seurat , group.by = "celltype.mapped_seurat", pt.size = 1, cols = col,
+        reduction = "umap") +
+  labs(title = "scRNA-seq Celltype")
+
+```
+
+
+Lets have a look at whether the number of fragments is correlated to the 
+number of counts in each celltype. This seems to be the case.
+
+
+```#{r, fig.width=10, fig.height=8}
+atac_seurat@meta.data %>% 
+  ggplot(aes(x = log10(nCount_originalexp ), y = log10(nFrags_atac))) +
+  geom_point(alpha = .2, size = .2) +
+  ggside::geom_xsidedensity() +
+  ggside::geom_ysidedensity() +
+  facet_wrap(~sample) +
+  labs(x = "Log10 Counts", y = "log10 Unique Fragments")
+```
+
+
+```#{r, fig.width=10, fig.height=10}
+atac_seurat@meta.data %>% 
+  ggplot(aes(x = log10(nCount_originalexp), y = log10(TSSEnrichment))) +
+  geom_point(size = .2, alpha = .2) +
+  ggside::geom_xsidedensity() +
+  ggside::geom_ysidedensity() +
+  facet_wrap(~sample)
+```
+
+
+```#{r}
+atac_seurat@meta.data %>% 
+  ggplot() +
+  geom_histogram(aes(x = PromoterRatio_atac)) 
+
+atac_seurat@meta.data %>% 
+  ggplot() +
+  geom_histogram(aes(x = NucleosomeRatio_atac)) 
+```
+
+
+
+```{r}
+#saveRDS(atac_seurat, "atac_Seurat_object")
+#saveRDS(rna_seurat, "rna_Seurat_object")
+```
+
+
