@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+#BSUB -R "rusage[mem=100GB]"
+#BSUB -o %J-scvi_gastrulation.out 
+#BSUB -e %J-scvi_gastrulation.err 
+#BSUB -J scvi_gastrulation
+#BSUB -q medium
+source ~/.bash_profile
+source ~/.bashrc
+load_conda 
+conda activate /omics/groups/OE0533/internal/katharina/scvi2
+
+python gene_names.py

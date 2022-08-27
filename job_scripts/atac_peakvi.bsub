@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+#BSUB -R "rusage[mem=10GB]" #for fp16 training "tensorcore" 
+#BSUB -gpu num=1:j_exclusive=yes:mode=exclusive_process:gmem=10GB
+#BSUB -o %J-scvi_gastrulation.out 
+#BSUB -e %J-scvi_gastrulation.err 
+#BSUB -J scvi_gastrulation
+#BSUB -q gpu
+source ~/.bash_profile
+source ~/.bashrc
+load_conda 
+conda activate /omics/groups/OE0533/internal/katharina/scvi2
+
+python atac_peakvi.py

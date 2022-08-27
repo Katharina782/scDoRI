@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+#BSUB -R "rusage[mem=100GB]" 
+#BSUB -o %J-seacell_gastrulation.out 
+#BSUB -e %J-seacell_gastrulation.err 
+#BSUB -J seacell_gastrulation
+#BSUB -q long
+source ~/.bash_profile
+source ~/.bashrc
+load_conda 
+conda activate /omics/groups/OE0533/internal/katharina/seacells_yml
+
+python SEACell_gastrulation_perturbation_data.py

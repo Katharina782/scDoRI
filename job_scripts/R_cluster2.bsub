@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+#BSUB -R "rusage[mem=200GB]" 
+#BSUB -o %J-repeat.out 
+#BSUB -e %J-repeat.err 
+#BSUB -J scvi_gastrulation
+#BSUB -q verylong
+source ~/.bash_profile
+source ~/.bashrc
+
+#! /usr/bin/bash
+module load gdal/3.0.2
+module load gcc/7.2.0
+module load libpng/1.6.37
+module load freetype/2.10.0
+module load hdf5/1.8.18
+module load binutils/2.34
+module load jags/4.3.0
+module load imagemagick/6.9.12
+module load R/4.1.0
+module load pandoc/2.2.1 
+
+###load_conda 
+###conda activate /omics/groups/OE0533/internal/katharina/R_env
+
+### Rscript /omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data_new/Kathi/save_files.R 
+
+
+Rscript -e 'library(rmarkdown); rmarkdown::render("/omics/groups/OE0533/internal/katharina/scDoRI/gastrulation_data/Rmds/18_3_Investigating_p2g_mat_entire_chromosome.Rmd", "html_document")'
+
+
