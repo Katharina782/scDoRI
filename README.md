@@ -4,7 +4,7 @@ Save progress of my labrotation
 The analysis of this project uses a multiome mouse gastrualation dataset from (Argelaguet, bioRxiv, 2022) doi: https://doi.org/10.1101/2022.06.15.496239.
 
 
-* `ArchK` contains R scripts with adapted ArchR (https://github.com/GreenleafLab/ArchR) functions. Cloning the ArchR repository (https://github.com/GreenleafLab/ArchR) and adding these R scripts as well as the function names to the name space enables the user to use the new functions.
+* `ArchK` contains R scripts with adapted ArchR (www.ArchRProject.com) functions. Cloning the ArchR repository (https://github.com/GreenleafLab/ArchR) and adding these R scripts as well as the function names to the name space enables the user to use the new functions.
 * `Rmds` contains Rmarkdowns with the early analysis of the mouse gastrulation dataset, including 4 timepoints, but no perturbation.
 * `Rmds_perturbation contains the same analysis as above, but for the complete dataset, including knockout of the transcription factor brachyury.
 * `job_scripts` contains bash scripts as well as R and python scripts that were run on the Cluster, because they require a lot of memory or a GPU.
